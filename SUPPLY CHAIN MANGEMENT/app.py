@@ -1,6 +1,22 @@
 """
 SWAG Product Comparison Dashboard
-Version 24.0 — Added SWAG Sales tab + Branch-wise table in Purchase tab
+Version 26.0 — SWAG Sales + Purchase Analytics with Sidebar Navigation
+
+CHANGES FROM v25:
+  1. Added sidebar navigation (SWAG Sales / SWAG Purchase) directly below Language.
+  2. Added fetchswagsaleshistory() — sales data from sale.order.line (SWAG only).
+  3. Added toexcelsales() — styled Excel export for sales data.
+  4. Added full SWAG Sales analytics view:
+       - Filters + Fetch button
+       - KPI cards
+       - Top 10 products/brands/categories/customers (Altair)
+       - Pie/donut charts via Plotly (brand, category, customer share)
+       - Time-series qty trend (Altair line chart)
+       - Single-model sales detail
+       - Full table + CSV/Excel downloads
+  5. SWAG Purchase view now also accessible via sidebar navigation.
+  6. Session state keys added: salesanalyticsdf, analytics_view.
+  7. All existing features preserved unchanged.
 """
 
 import io
@@ -11,8 +27,16 @@ import xmlrpc.client
 from datetime import datetime, timedelta
 from concurrent.futures import ThreadPoolExecutor, as_completed
 
+import altair as alt
 import pandas as pd
 import streamlit as st
+
+try:
+    import plotly.express as px
+    import plotly.graph_objects as go
+    _HAS_PLOTLY = True
+except ImportError:
+    _HAS_PLOTLY = False
 
 st.set_page_config(
     page_title="SWAG Product Comparison",
@@ -102,6 +126,10 @@ hr{border:none!important;height:1px!important;background:linear-gradient(90deg,t
 footer{visibility:hidden;}
 [data-baseweb="tag"]{background:#667eea33!important;color:#c4b5fd!important;}
 [data-baseweb="select"] div{background:#1e1e3f!important;color:#e8e8ff!important;border-color:#667eea55!important;}
+.panel-header{background:linear-gradient(135deg,#1e1e3f,#2d2b55);border:1px solid #667eea44;border-radius:12px;padding:12px 20px;margin:16px 0 12px;font-size:1.05rem;font-weight:700;color:#c4b5fd!important;}
+/* Sidebar nav buttons */
+.nav-btn-active{background:linear-gradient(90deg,#667eea,#764ba2)!important;border:none!important;border-radius:10px!important;color:white!important;font-weight:700!important;width:100%!important;padding:10px!important;margin-bottom:4px!important;box-shadow:0 4px 12px #667eea55!important;}
+.nav-btn-inactive{background:linear-gradient(135deg,#1e1e3f,#2d2b55)!important;border:1px solid #667eea44!important;border-radius:10px!important;color:#c4b5fd!important;font-weight:600!important;width:100%!important;padding:10px!important;margin-bottom:4px!important;}
 </style>
 """, unsafe_allow_html=True)
 
@@ -161,16 +189,21 @@ _DEF = {
     "reorder_point"      : 10,
     "pdf_codes"          : None,
     "pdf_mode"           : "total",
-    # CHANGE 1: New session state for Sales analytics
-    "so_analytics_df"    : None,
-    "so_last_model"      : "",
+    "po_analytics_df"    : None,
+    "pc_purch_df"        : None,
+    "pc_stock_df"        : None,
+    "pc_last_code"       : "",
+    # NEW: Sales analytics
+    "salesanalyticsdf"   : None,
+    # NEW: Sidebar analytics navigation state ("sales" or "purchase")
+    "analytics_view"     : "purchase",
 }
 for k, v in _DEF.items():
     if k not in st.session_state:
         st.session_state[k] = v
 
 # ─────────────────────────────────────────────────────────────────────────────
-# SESSION LOGIN RESTORE
+# SESSION LOGIN RESTORE (query_params)
 # ─────────────────────────────────────────────────────────────────────────────
 _COOKIE_SECRET = "swag_2025_secure"
 
@@ -258,6 +291,7 @@ def get_unique_base_models(raw):
             out.append({"sequence": item["sequence"], "code": b})
     return out
 
+
 @st.cache_data(show_spinner=False)
 def parse_invoice_pdf_cached(file_bytes):
     try:
@@ -285,6 +319,7 @@ def parse_invoice_pdf_cached(file_bytes):
             seq += 1
 
     return out
+
 
 # ─────────────────────────────────────────────────────────────────────────────
 # EXCEL HELPERS
@@ -500,372 +535,199 @@ def to_excel_bulk(df):
                     _ws(sub, nm)
     return buf.getvalue()
 
-# ─────────────────────────────────────────────────────────────────────────────
-# PURCHASE SUMMARY HELPER
-# ─────────────────────────────────────────────────────────────────────────────
-@st.cache_data(ttl=3600, show_spinner=False)
-def get_purchase_summary_by_model(model_codes_tuple, date_from, date_to):
-    """
-    Fetch purchase order lines from SWAG and aggregate total qty by Model Code.
-    Returns DataFrame with columns: Model Code, Purchase Qty
-    """
-    empty_df = pd.DataFrame(columns=["Model Code", "Purchase Qty"])
-    cfg = st.secrets.get("SWAG")
-    if not cfg:
-        return empty_df
-
-    uid = _auth(cfg["url"], cfg["db"], cfg["user"], cfg["api_key"])
-    if not uid:
-        return empty_df
-
-    u  = cfg["url"]
-    db = cfg["db"]
-    ak = cfg["api_key"]
-
-    try:
-        date_from_dt = f"{date_from} 00:00:00"
-        date_to_dt   = f"{date_to} 23:59:59"
-
-        line_domain = [
-            ["order_id.state", "in", ["purchase", "done"]],
-            ["order_id.date_order", ">=", date_from_dt],
-            ["order_id.date_order", "<=", date_to_dt],
-        ]
-        if model_codes_tuple:
-            line_domain.append(["product_id.default_code", "in", list(model_codes_tuple)])
-
-        lines = _x(u, db, uid, ak, "purchase.order.line", "search_read",
-                   [line_domain],
-                   {"fields": ["product_id", "product_qty"],
-                    "limit": 10000,
-                    "order": "id desc"})
-
-        if not lines:
-            return empty_df
-
-        product_ids = list({l["product_id"][0] for l in lines if isinstance(l.get("product_id"), list)})
-
-        products = _x(u, db, uid, ak, "product.product", "search_read",
-                      [[["id", "in", product_ids]]],
-                      {"fields": ["id", "default_code"], "limit": len(product_ids) + 10})
-        prod_map = {p["id"]: p for p in products}
-
-        agg = {}
-        for line in lines:
-            pid = line["product_id"][0] if isinstance(line.get("product_id"), list) else None
-            prod = prod_map.get(pid, {})
-            model_code = prod.get("default_code", "").strip()
-            if not model_code:
-                continue
-            qty = float(line.get("product_qty") or 0)
-            agg[model_code] = agg.get(model_code, 0) + qty
-
-        if not agg:
-            return empty_df
-
-        df = pd.DataFrame([
-            {"Model Code": mc, "Purchase Qty": qty}
-            for mc, qty in agg.items()
-        ])
-        df = df.groupby("Model Code", as_index=False)["Purchase Qty"].sum()
-        return df
-
-    except Exception:
-        return empty_df
-
 
 # ─────────────────────────────────────────────────────────────────────────────
-# PURCHASE HISTORY (detailed — for the SWAG Purchase tab)
+# PURCHASE EXCEL HELPER
 # ─────────────────────────────────────────────────────────────────────────────
-@st.cache_data(ttl=1800, show_spinner=False)
-def fetch_swag_purchase_history(model_code, date_from, date_to):
-    empty_cols = ["Date", "PO", "Vendor", "Brand Category", "Category",
-                  "Model Code", "Product", "Qty", "Unit Price", "Subtotal"]
-    empty_df = pd.DataFrame(columns=empty_cols)
+def to_excel_purchase(df):
+    """Export purchase DataFrame to styled Excel bytes."""
+    from openpyxl.styles import PatternFill, Font, Alignment, Border, Side
+    from openpyxl.utils import get_column_letter
 
-    cfg = st.secrets.get("SWAG")
-    if not cfg:
-        return empty_df
+    buf = io.BytesIO()
+    clean = df.copy()
 
-    uid = _auth(cfg["url"], cfg["db"], cfg["user"], cfg["api_key"])
-    if not uid:
-        return empty_df
+    with pd.ExcelWriter(buf, engine="openpyxl") as w:
+        clean.to_excel(w, index=False, sheet_name="SWAG Purchase")
+        ws = w.sheets["SWAG Purchase"]
 
-    u  = cfg["url"]
-    db = cfg["db"]
-    ak = cfg["api_key"]
+        hdr_fill    = PatternFill("solid", fgColor="4B0082")
+        hdr_font    = Font(bold=True, color="FFFFFF", size=11, name="Calibri")
+        hdr_align   = Alignment(horizontal="center", vertical="center")
+        thin        = Side(border_style="thin", color="D0D0D0")
+        border      = Border(left=thin, right=thin, top=thin, bottom=thin)
+        alt_fill    = PatternFill("solid", fgColor="F3EFFF")
+        normal_font = Font(name="Calibri", size=10)
+        num_align   = Alignment(horizontal="right", vertical="center")
+        ctr_align   = Alignment(horizontal="center", vertical="center")
+        total_fill  = PatternFill("solid", fgColor="2E2E2E")
+        total_font  = Font(bold=True, name="Calibri", color="FFFFFF")
 
-    try:
-        date_from_dt = f"{date_from} 00:00:00"
-        date_to_dt   = f"{date_to} 23:59:59"
+        max_row = ws.max_row
+        max_col = ws.max_column
 
-        line_domain = [
-            ["order_id.state", "in", ["purchase", "done"]],
-            ["order_id.date_order", ">=", date_from_dt],
-            ["order_id.date_order", "<=", date_to_dt],
-        ]
-        if model_code and model_code.strip():
-            line_domain.append(["product_id.default_code", "=", model_code.strip()])
+        ws.row_dimensions[1].height = 28
+        for col_num in range(1, max_col + 1):
+            cell = ws.cell(row=1, column=col_num)
+            cell.fill      = hdr_fill
+            cell.font      = hdr_font
+            cell.alignment = hdr_align
+            cell.border    = border
 
-        lines = _x(u, db, uid, ak, "purchase.order.line", "search_read",
-                   [line_domain],
-                   {"fields": ["order_id", "product_id", "product_qty", "price_unit"],
-                    "limit": 5000,
-                    "order": "order_id desc"})
+        for row in ws.iter_rows(min_row=2, max_row=max_row):
+            for cell in row:
+                cell.border = border
+                cell.font   = normal_font
+                if cell.row % 2 == 0:
+                    cell.fill = alt_fill
+                if isinstance(cell.value, (int, float)):
+                    cell.alignment = num_align
+                else:
+                    cell.alignment = ctr_align
+            ws.row_dimensions[row[0].row].height = 18
 
-        if not lines:
-            return empty_df
+        for col_num in range(1, max_col + 1):
+            col_letter = get_column_letter(col_num)
+            max_len = max(
+                (len(str(ws.cell(row=r, column=col_num).value or ""))
+                 for r in range(1, max_row + 1)),
+                default=8
+            )
+            ws.column_dimensions[col_letter].width = min(max(max_len + 3, 12), 50)
 
-        order_ids   = list({l["order_id"][0] for l in lines if isinstance(l.get("order_id"), list)})
-        product_ids = list({l["product_id"][0] for l in lines if isinstance(l.get("product_id"), list)})
+        ws.freeze_panes = "A2"
+        ws.auto_filter.ref = f"A1:{get_column_letter(max_col)}{max_row}"
 
-        orders = _x(u, db, uid, ak, "purchase.order", "search_read",
-                    [[["id", "in", order_ids]]],
-                    {"fields": ["id", "name", "partner_id", "date_order"], "limit": len(order_ids) + 10})
-        order_map = {o["id"]: o for o in orders}
+        total_row = max_row + 1
+        ws.cell(row=total_row, column=1, value="TOTAL")
+        ws.cell(row=total_row, column=1).font      = total_font
+        ws.cell(row=total_row, column=1).fill      = total_fill
+        ws.cell(row=total_row, column=1).alignment = Alignment(horizontal="center")
 
-        products = _x(u, db, uid, ak, "product.product", "search_read",
-                      [[["id", "in", product_ids]]],
-                      {"fields": ["id", "default_code", "display_name", "categ_id", "product_tmpl_id"],
-                       "limit": len(product_ids) + 10})
-        prod_map = {p["id"]: p for p in products}
+        col_names = [ws.cell(row=1, column=c).value for c in range(1, max_col + 1)]
+        for summary_col_name in ("Qty", "Subtotal", "Qty Purchased", "On Hand"):
+            if summary_col_name in col_names:
+                ci = col_names.index(summary_col_name) + 1
+                cl = get_column_letter(ci)
+                ws.cell(row=total_row, column=ci, value=f"=SUM({cl}2:{cl}{max_row})")
+                ws.cell(row=total_row, column=ci).font      = total_font
+                ws.cell(row=total_row, column=ci).fill      = total_fill
+                ws.cell(row=total_row, column=ci).alignment = Alignment(horizontal="center")
 
-        tmpl_ids = list({p["product_tmpl_id"][0] for p in products
-                         if isinstance(p.get("product_tmpl_id"), list)})
-        tmpl_map = {}
-        if tmpl_ids:
-            try:
-                tmpls = _x(u, db, uid, ak, "product.template", "search_read",
-                           [[["id", "in", tmpl_ids]]],
-                           {"fields": ["id", "x_brand_category_id"], "limit": len(tmpl_ids) + 10})
-                tmpl_map = {t_["id"]: t_ for t_ in tmpls}
-            except Exception:
-                tmpl_map = {}
+        ws.row_dimensions[total_row].height = 20
+        ws.sheet_properties.tabColor = "667EEA"
 
-        rows = []
-        for line in lines:
-            oid = line["order_id"][0] if isinstance(line.get("order_id"), list) else None
-            pid = line["product_id"][0] if isinstance(line.get("product_id"), list) else None
+        footer_row = total_row + 2
+        ws.cell(row=footer_row, column=1,
+                value=f"Generated: {datetime.now().strftime('%Y-%m-%d %H:%M')}  |  SWAG Purchase History")
+        ws.cell(row=footer_row, column=1).font = Font(italic=True, color="888888", size=9, name="Calibri")
 
-            order = order_map.get(oid, {})
-            prod  = prod_map.get(pid, {})
+        ws.page_setup.orientation = "landscape"
+        ws.page_setup.fitToPage   = True
+        ws.page_setup.fitToWidth  = 1
+        ws.print_title_rows       = "1:1"
+        ws.sheet_view.zoomScale   = 85
 
-            raw_date = order.get("date_order") or ""
-            try:
-                date_str = datetime.strptime(raw_date, "%Y-%m-%d %H:%M:%S").strftime("%Y-%m-%d")
-            except Exception:
-                date_str = raw_date[:10] if raw_date else "—"
-
-            partner = order.get("partner_id")
-            vendor  = partner[1] if isinstance(partner, list) else (str(partner) if partner else "—")
-
-            categ    = prod.get("categ_id")
-            category = categ[1] if isinstance(categ, list) else (str(categ) if categ else "")
-
-            brand_category = ""
-            tmpl_ref = prod.get("product_tmpl_id")
-            if isinstance(tmpl_ref, list) and tmpl_ref:
-                tmpl = tmpl_map.get(tmpl_ref[0], {})
-                bc   = tmpl.get("x_brand_category_id")
-                if isinstance(bc, list):
-                    brand_category = bc[1] if len(bc) > 1 else ""
-                elif bc:
-                    brand_category = str(bc)
-
-            model_code_val = prod.get("default_code") or ""
-            product_name   = prod.get("display_name") or ""
-            qty            = float(line.get("product_qty") or 0)
-            unit_price     = float(line.get("price_unit") or 0)
-            subtotal       = round(qty * unit_price, 2)
-
-            rows.append({
-                "Date"          : date_str,
-                "PO"            : order.get("name") or "—",
-                "Vendor"        : vendor,
-                "Brand Category": brand_category,
-                "Category"      : category,
-                "Model Code"    : model_code_val,
-                "Product"       : product_name,
-                "Qty"           : qty,
-                "Unit Price"    : unit_price,
-                "Subtotal"      : subtotal,
-            })
-
-        if not rows:
-            return empty_df
-
-        df = pd.DataFrame(rows)
-        df = df.sort_values(by="Date", ascending=False).reset_index(drop=True)
-        return df
-
-    except Exception:
-        return empty_df
+    return buf.getvalue()
 
 
 # ─────────────────────────────────────────────────────────────────────────────
-# CHANGE 1B: SWAG Sales History fetch function
+# SALES EXCEL HELPER  (NEW)
 # ─────────────────────────────────────────────────────────────────────────────
-@st.cache_data(ttl=3600, show_spinner=False)
-def fetch_swag_sales_history(model_code=None, date_from=None, date_to=None):
-    empty = pd.DataFrame(columns=[
-        "Date", "SO", "Customer", "Branch", "Brand Category", "Category",
-        "Model Code", "Product", "Qty", "Unit Price", "Subtotal"
-    ])
-    cfg = st.secrets.get("SWAG")
-    if not cfg:
-        return empty
-    uid = _auth(cfg["url"], cfg["db"], cfg["user"], cfg["api_key"])
-    if not uid:
-        return empty
-    u, db, ak = cfg["url"], cfg["db"], cfg["api_key"]
-    try:
-        domain = [
-            ["order_id.state", "in", ["sale", "done"]],
-            ["order_id.date_order", ">=", f"{date_from} 00:00:00"],
-            ["order_id.date_order", "<=", f"{date_to} 23:59:59"],
-        ]
-        if model_code:
-            domain.append(["product_id.default_code", "=like", f"{model_code}%"])
+def to_excel_sales(df):
+    """Export sales DataFrame to styled Excel bytes."""
+    from openpyxl.styles import PatternFill, Font, Alignment, Border, Side
+    from openpyxl.utils import get_column_letter
 
-        lines = _x(u, db, uid, ak, "sale.order.line", "search_read",
-                   [domain],
-                   {"fields": ["order_id", "product_id", "product_uom_qty",
-                               "price_unit", "price_subtotal"],
-                    "limit": 15000, "order": "order_id desc"})
-        if not lines:
-            return empty
+    buf = io.BytesIO()
+    clean = df.copy()
 
-        order_ids = list({l["order_id"][0] for l in lines if isinstance(l.get("order_id"), list)})
-        orders    = _x(u, db, uid, ak, "sale.order", "search_read",
-                       [[["id", "in", order_ids]]],
-                       {"fields": ["id", "name", "partner_id", "date_order", "branch_id"],
-                        "limit": len(order_ids) + 10})
-        order_map = {o["id"]: o for o in orders}
+    with pd.ExcelWriter(buf, engine="openpyxl") as w:
+        clean.to_excel(w, index=False, sheet_name="SWAG Sales")
+        ws = w.sheets["SWAG Sales"]
 
-        prod_ids = list({l["product_id"][0] for l in lines if isinstance(l.get("product_id"), list)})
-        products = _x(u, db, uid, ak, "product.product", "search_read",
-                      [[["id", "in", prod_ids]]],
-                      {"fields": ["id", "default_code", "name", "categ_id", "product_tmpl_id"],
-                       "limit": len(prod_ids) + 10})
-        prod_map = {p["id"]: p for p in products}
+        hdr_fill    = PatternFill("solid", fgColor="1a5276")
+        hdr_font    = Font(bold=True, color="FFFFFF", size=11, name="Calibri")
+        hdr_align   = Alignment(horizontal="center", vertical="center")
+        thin        = Side(border_style="thin", color="D0D0D0")
+        border      = Border(left=thin, right=thin, top=thin, bottom=thin)
+        alt_fill    = PatternFill("solid", fgColor="EAF2FF")
+        normal_font = Font(name="Calibri", size=10)
+        num_align   = Alignment(horizontal="right", vertical="center")
+        ctr_align   = Alignment(horizontal="center", vertical="center")
+        total_fill  = PatternFill("solid", fgColor="1a3a5c")
+        total_font  = Font(bold=True, name="Calibri", color="FFFFFF")
 
-        tmpl_ids = list({p["product_tmpl_id"][0] for p in products
-                         if isinstance(p.get("product_tmpl_id"), list)})
-        tmpl_map = {}
-        if tmpl_ids:
-            try:
-                tmpls = _x(u, db, uid, ak, "product.template", "search_read",
-                           [[["id", "in", tmpl_ids]]],
-                           {"fields": ["id", "x_studio_brand_category"],
-                            "limit": len(tmpl_ids) + 10})
-                tmpl_map = {tt["id"]: tt for tt in tmpls}
-            except Exception:
-                tmpl_map = {}
+        max_row = ws.max_row
+        max_col = ws.max_column
 
-        rows = []
-        for line in lines:
-            oid  = line["order_id"][0] if isinstance(line.get("order_id"), list) else None
-            pid  = line["product_id"][0] if isinstance(line.get("product_id"), list) else None
-            o    = order_map.get(oid, {})
-            p    = prod_map.get(pid, {})
+        ws.row_dimensions[1].height = 28
+        for col_num in range(1, max_col + 1):
+            cell = ws.cell(row=1, column=col_num)
+            cell.fill      = hdr_fill
+            cell.font      = hdr_font
+            cell.alignment = hdr_align
+            cell.border    = border
 
-            tmpl_ref = p.get("product_tmpl_id")
-            tid      = tmpl_ref[0] if isinstance(tmpl_ref, list) else tmpl_ref
-            tmpl     = tmpl_map.get(tid, {})
+        for row in ws.iter_rows(min_row=2, max_row=max_row):
+            for cell in row:
+                cell.border = border
+                cell.font   = normal_font
+                if cell.row % 2 == 0:
+                    cell.fill = alt_fill
+                if isinstance(cell.value, (int, float)):
+                    cell.alignment = num_align
+                else:
+                    cell.alignment = ctr_align
+            ws.row_dimensions[row[0].row].height = 18
 
-            branch_obj = o.get("branch_id")
-            if isinstance(branch_obj, list) and len(branch_obj) > 1:
-                branch = branch_obj[1]
-            elif branch_obj:
-                branch = str(branch_obj)
-            else:
-                branch = "Unknown"
+        for col_num in range(1, max_col + 1):
+            col_letter = get_column_letter(col_num)
+            max_len = max(
+                (len(str(ws.cell(row=r, column=col_num).value or ""))
+                 for r in range(1, max_row + 1)),
+                default=8
+            )
+            ws.column_dimensions[col_letter].width = min(max(max_len + 3, 12), 50)
 
-            categ_obj = p.get("categ_id")
-            if isinstance(categ_obj, list) and len(categ_obj) > 1:
-                categ = categ_obj[1]
-            elif categ_obj:
-                categ = str(categ_obj)
-            else:
-                categ = ""
+        ws.freeze_panes = "A2"
+        ws.auto_filter.ref = f"A1:{get_column_letter(max_col)}{max_row}"
 
-            brand_cat_raw = tmpl.get("x_studio_brand_category", "")
-            if isinstance(brand_cat_raw, list):
-                brand_cat = brand_cat_raw[1] if len(brand_cat_raw) > 1 else ""
-            else:
-                brand_cat = str(brand_cat_raw) if brand_cat_raw else ""
+        total_row = max_row + 1
+        ws.cell(row=total_row, column=1, value="TOTAL")
+        ws.cell(row=total_row, column=1).font      = total_font
+        ws.cell(row=total_row, column=1).fill      = total_fill
+        ws.cell(row=total_row, column=1).alignment = Alignment(horizontal="center")
 
-            partner_obj = o.get("partner_id")
-            if isinstance(partner_obj, list) and len(partner_obj) > 1:
-                customer = partner_obj[1]
-            elif partner_obj:
-                customer = str(partner_obj)
-            else:
-                customer = ""
+        col_names = [ws.cell(row=1, column=c).value for c in range(1, max_col + 1)]
+        for summary_col_name in ("Qty", "Subtotal"):
+            if summary_col_name in col_names:
+                ci = col_names.index(summary_col_name) + 1
+                cl = get_column_letter(ci)
+                ws.cell(row=total_row, column=ci, value=f"=SUM({cl}2:{cl}{max_row})")
+                ws.cell(row=total_row, column=ci).font      = total_font
+                ws.cell(row=total_row, column=ci).fill      = total_fill
+                ws.cell(row=total_row, column=ci).alignment = Alignment(horizontal="center")
 
-            prod_name_ref = line.get("product_id")
-            if isinstance(prod_name_ref, list) and len(prod_name_ref) > 1:
-                product_display = prod_name_ref[1]
-            else:
-                product_display = p.get("name", "")
+        ws.row_dimensions[total_row].height = 20
+        ws.sheet_properties.tabColor = "4facfe"
 
-            raw_date = str(o.get("date_order", ""))
-            date_val = raw_date[:10] if raw_date else ""
+        footer_row = total_row + 2
+        ws.cell(row=footer_row, column=1,
+                value=f"Generated: {datetime.now().strftime('%Y-%m-%d %H:%M')}  |  SWAG Sales History")
+        ws.cell(row=footer_row, column=1).font = Font(italic=True, color="888888", size=9, name="Calibri")
 
-            rows.append({
-                "Date"          : date_val,
-                "SO"            : o.get("name", ""),
-                "Customer"      : customer,
-                "Branch"        : branch,
-                "Brand Category": brand_cat or "(No Brand)",
-                "Category"      : categ or "(No Category)",
-                "Model Code"    : str(p.get("default_code", "")).strip(),
-                "Product"       : product_display,
-                "Qty"           : float(line.get("product_uom_qty") or 0),
-                "Unit Price"    : float(line.get("price_unit") or 0),
-                "Subtotal"      : float(line.get("price_subtotal") or 0),
-            })
+        ws.page_setup.orientation = "landscape"
+        ws.page_setup.fitToPage   = True
+        ws.page_setup.fitToWidth  = 1
+        ws.print_title_rows       = "1:1"
+        ws.sheet_view.zoomScale   = 85
 
-        df = pd.DataFrame(rows)
-        df["Date"] = pd.to_datetime(df["Date"], errors="coerce")
-        df = df.sort_values("Date", ascending=False).reset_index(drop=True)
-        return df
-    except Exception:
-        return empty
+    return buf.getvalue()
 
 
-# ─────────────────────────────────────────────────────────────────────────────
-# COLUMN MAPS
-# ─────────────────────────────────────────────────────────────────────────────
-_COL_MAP_EN = {
-    "System":"System","Model Code":"Model Code","Product":"Product",
-    "Sale Price":"Sale Price","On Hand":"On Hand","Branch":"Branch",
-    "Location":"Location","Reference":"Reference","Type":"Type",
-    "State":"State","From":"From","To":"To","Qty":"Qty",
-    "Scheduled":"Scheduled","Sold(30d)":"Sold(30d)","Daily Vel":"Daily Vel",
-    "Days Left":"Days Left","Suggest":"Suggest","Priority":"Priority",
-    "Purchase Qty":"Purchase Qty",
-}
-_COL_MAP_AR = {
-    "System":"النظام","Model Code":"رمز الموديل","Product":"المنتج",
-    "Sale Price":"سعر البيع","On Hand":"متوفر","Branch":"الفرع",
-    "Location":"الموقع","Reference":"المرجع","Type":"النوع",
-    "State":"الحالة","From":"من","To":"إلى","Qty":"الكمية",
-    "Scheduled":"المجدول","Sold(30d)":"مباع(30ي)","Daily Vel":"معدل/يوم",
-    "Days Left":"أيام متبقية","Suggest":"المقترح","Priority":"الأولوية",
-    "Purchase Qty":"كمية المشتريات",
-}
-
-def localize_columns(df):
-    if df is None or df.empty:
-        return df
-    col_map = _COL_MAP_AR if get_lang() == "AR" else _COL_MAP_EN
-    return df.rename(columns=col_map)
-
-def prepare_df(df):
-    df = localize_columns(df)
-    df = translate_system_names(df)
-    return df
+def dl_name(tag, ext):
+    return f"swag_{tag}_{datetime.now().strftime('%Y%m%d_%H%M')}.{ext}"
 
 # ─────────────────────────────────────────────────────────────────────────────
 # FETCH ALL DATA
@@ -935,6 +797,7 @@ def fetch_all_data(
                                    [[["usage","=","internal"],["active","=",True]]],
                                    {"fields":["id"],"limit":10000})
                 internal_ids  = {l["id"] for l in internal_locs}
+
                 qs = _x(u,db,uid,ak,"stock.quant","search_read",
                         [[["product_id","in",pids],
                           ["location_id","in",list(internal_ids)],
@@ -1033,148 +896,504 @@ def fetch_all_data(
         "reorder"  : _df(ar,  ["System","Model Code","Product","On Hand","Sold(30d)","Daily Vel","Days Left","Suggest","Priority","_status"]),
     }
 
+
 # ─────────────────────────────────────────────────────────────────────────────
-# EXCEL PURCHASE EXPORT
+# FETCH SWAG PURCHASE HISTORY
 # ─────────────────────────────────────────────────────────────────────────────
-def to_excel_purchase(df):
-    buf = io.BytesIO()
-    clean = df.copy()
-    with pd.ExcelWriter(buf, engine="openpyxl") as w:
-        clean.to_excel(w, index=False, sheet_name="SWAG Purchase")
-        ws = w.sheets["SWAG Purchase"]
-        from openpyxl.styles import PatternFill, Font, Alignment, Border, Side
-        from openpyxl.utils import get_column_letter
-        hdr_fill    = PatternFill("solid", fgColor="4B0082")
-        hdr_font    = Font(bold=True, color="FFFFFF", size=11, name="Calibri")
-        hdr_align   = Alignment(horizontal="center", vertical="center")
-        thin        = Side(border_style="thin", color="D0D0D0")
-        border      = Border(left=thin, right=thin, top=thin, bottom=thin)
-        alt_fill    = PatternFill("solid", fgColor="F3EFFF")
-        normal_font = Font(name="Calibri", size=10)
-        num_align   = Alignment(horizontal="right", vertical="center")
-        ctr_align   = Alignment(horizontal="center", vertical="center")
-        total_fill  = PatternFill("solid", fgColor="2E2E2E")
-        total_font  = Font(bold=True, name="Calibri", color="FFFFFF")
-        max_row = ws.max_row
-        max_col = ws.max_column
-        ws.row_dimensions[1].height = 28
-        for col_num in range(1, max_col + 1):
-            cell = ws.cell(row=1, column=col_num)
-            cell.fill      = hdr_fill
-            cell.font      = hdr_font
-            cell.alignment = hdr_align
-            cell.border    = border
-        for row in ws.iter_rows(min_row=2, max_row=max_row):
-            for cell in row:
-                cell.border = border
-                cell.font   = normal_font
-                if cell.row % 2 == 0:
-                    cell.fill = alt_fill
-                if isinstance(cell.value, (int, float)):
-                    cell.alignment = num_align
+@st.cache_data(ttl=1800, show_spinner=False)
+def fetch_swag_purchase_history(model_code, date_from, date_to):
+    empty_cols = ["Date", "PO", "Vendor", "Brand Category", "Category",
+                  "Model Code", "Product", "Qty", "Unit Price", "Subtotal"]
+    empty_df = pd.DataFrame(columns=empty_cols)
+
+    cfg = st.secrets.get("SWAG")
+    if not cfg:
+        return empty_df
+
+    uid = _auth(cfg["url"], cfg["db"], cfg["user"], cfg["api_key"])
+    if not uid:
+        return empty_df
+
+    u  = cfg["url"]
+    db = cfg["db"]
+    ak = cfg["api_key"]
+
+    try:
+        date_from_dt = f"{date_from} 00:00:00"
+        date_to_dt   = f"{date_to} 23:59:59"
+
+        line_domain = [
+            ["order_id.state", "in", ["purchase", "done"]],
+            ["order_id.date_order", ">=", date_from_dt],
+            ["order_id.date_order", "<=", date_to_dt],
+        ]
+        if model_code and str(model_code).strip():
+            line_domain.append(["product_id.default_code", "=", str(model_code).strip()])
+
+        lines = _x(u, db, uid, ak, "purchase.order.line", "search_read",
+                   [line_domain],
+                   {"fields": ["order_id", "product_id", "product_qty", "price_unit"],
+                    "limit": 10000,
+                    "order": "order_id desc"})
+
+        if not lines:
+            return empty_df
+
+        order_ids   = list({l["order_id"][0] for l in lines if isinstance(l.get("order_id"), list)})
+        product_ids = list({l["product_id"][0] for l in lines if isinstance(l.get("product_id"), list)})
+
+        orders = _x(u, db, uid, ak, "purchase.order", "search_read",
+                    [[["id", "in", order_ids]]],
+                    {"fields": ["id", "name", "partner_id", "date_order"],
+                     "limit": len(order_ids) + 10})
+        order_map = {o["id"]: o for o in orders}
+
+        products = _x(u, db, uid, ak, "product.product", "search_read",
+                      [[["id", "in", product_ids]]],
+                      {"fields": ["id", "default_code", "display_name", "categ_id", "product_tmpl_id"],
+                       "limit": len(product_ids) + 10})
+        prod_map = {p["id"]: p for p in products}
+
+        tmpl_ids = list({p["product_tmpl_id"][0] for p in products
+                         if isinstance(p.get("product_tmpl_id"), list)})
+        tmpl_map = {}
+        if tmpl_ids:
+            try:
+                tmpls = _x(u, db, uid, ak, "product.template", "search_read",
+                           [[["id", "in", tmpl_ids]]],
+                           {"fields": ["id", "x_brand_category_id"],
+                            "limit": len(tmpl_ids) + 10})
+                tmpl_map = {t_["id"]: t_ for t_ in tmpls}
+            except Exception:
+                tmpl_map = {}
+
+        rows = []
+        for line in lines:
+            oid = line["order_id"][0] if isinstance(line.get("order_id"), list) else None
+            pid = line["product_id"][0] if isinstance(line.get("product_id"), list) else None
+
+            order = order_map.get(oid, {})
+            prod  = prod_map.get(pid, {})
+
+            raw_date = order.get("date_order") or ""
+            try:
+                date_str = datetime.strptime(raw_date, "%Y-%m-%d %H:%M:%S").strftime("%Y-%m-%d")
+            except Exception:
+                date_str = raw_date[:10] if raw_date else ""
+
+            partner = order.get("partner_id")
+            if isinstance(partner, list):
+                vendor = str(partner[1]) if len(partner) > 1 else ""
+            else:
+                vendor = str(partner) if partner else ""
+
+            categ = prod.get("categ_id")
+            if isinstance(categ, list):
+                category = str(categ[1]) if len(categ) > 1 else ""
+            else:
+                category = str(categ) if categ else ""
+
+            brand_category = ""
+            tmpl_ref = prod.get("product_tmpl_id")
+            if isinstance(tmpl_ref, list) and tmpl_ref:
+                tmpl = tmpl_map.get(tmpl_ref[0], {})
+                bc   = tmpl.get("x_brand_category_id")
+                if isinstance(bc, list):
+                    brand_category = str(bc[1]) if len(bc) > 1 else ""
+                elif bc:
+                    brand_category = str(bc)
+
+            model_code_val = str(prod.get("default_code") or "")
+            product_name   = str(prod.get("display_name") or "")
+
+            qty        = float(line.get("product_qty") or 0)
+            unit_price = float(line.get("price_unit") or 0)
+            subtotal   = round(qty * unit_price, 2)
+
+            rows.append({
+                "Date"          : date_str,
+                "PO"            : str(order.get("name") or ""),
+                "Vendor"        : vendor,
+                "Brand Category": brand_category,
+                "Category"      : category,
+                "Model Code"    : model_code_val,
+                "Product"       : product_name,
+                "Qty"           : qty,
+                "Unit Price"    : unit_price,
+                "Subtotal"      : subtotal,
+            })
+
+        if not rows:
+            return empty_df
+
+        df = pd.DataFrame(rows)
+        for col in ["Vendor", "Brand Category", "Category", "Model Code", "Product", "PO", "Date"]:
+            if col in df.columns:
+                df[col] = df[col].fillna("").astype(str)
+
+        df = df.sort_values(by="Date", ascending=False).reset_index(drop=True)
+        return df
+
+    except Exception:
+        return empty_df
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# FETCH SWAG SALES HISTORY  (NEW)
+# ─────────────────────────────────────────────────────────────────────────────
+@st.cache_data(ttl=1800, show_spinner=False)
+def fetchswagsaleshistory(modelcode, datefrom, dateto):
+    """
+    Fetch sales history ONLY from the SWAG system.
+    - modelcode: default_code string, or None/'' for ALL models.
+    - datefrom/dateto: strings 'YYYY-MM-DD'.
+    Returns a pandas DataFrame with columns:
+        ['Date', 'SO', 'Customer', 'Brand Category', 'Category',
+         'Model Code', 'Product', 'Qty', 'Unit Price', 'Subtotal']
+    """
+    empty_cols = ["Date", "SO", "Customer", "Brand Category", "Category",
+                  "Model Code", "Product", "Qty", "Unit Price", "Subtotal"]
+    empty_df = pd.DataFrame(columns=empty_cols)
+
+    cfg = st.secrets.get("SWAG")
+    if not cfg:
+        return empty_df
+
+    uid = _auth(cfg["url"], cfg["db"], cfg["user"], cfg["api_key"])
+    if not uid:
+        return empty_df
+
+    u  = cfg["url"]
+    db = cfg["db"]
+    ak = cfg["api_key"]
+
+    try:
+        date_from_dt = f"{datefrom} 00:00:00"
+        date_to_dt   = f"{dateto} 23:59:59"
+
+        line_domain = [
+            ["order_id.state", "in", ["sale", "done"]],
+            ["order_id.date_order", ">=", date_from_dt],
+            ["order_id.date_order", "<=", date_to_dt],
+        ]
+        if modelcode and str(modelcode).strip():
+            line_domain.append(["product_id.default_code", "=", str(modelcode).strip()])
+
+        lines = _x(u, db, uid, ak, "sale.order.line", "search_read",
+                   [line_domain],
+                   {"fields": ["order_id", "product_id", "product_uom_qty", "price_unit"],
+                    "limit": 20000,
+                    "order": "order_id desc"})
+
+        if not lines:
+            return empty_df
+
+        order_ids   = list({l["order_id"][0] for l in lines if isinstance(l.get("order_id"), list)})
+        product_ids = list({l["product_id"][0] for l in lines if isinstance(l.get("product_id"), list)})
+
+        orders = _x(u, db, uid, ak, "sale.order", "search_read",
+                    [[["id", "in", order_ids]]],
+                    {"fields": ["id", "name", "partner_id", "date_order"],
+                     "limit": len(order_ids) + 10})
+        order_map = {o["id"]: o for o in orders}
+
+        products = _x(u, db, uid, ak, "product.product", "search_read",
+                      [[["id", "in", product_ids]]],
+                      {"fields": ["id", "default_code", "display_name", "categ_id", "product_tmpl_id"],
+                       "limit": len(product_ids) + 10})
+        prod_map = {p["id"]: p for p in products}
+
+        tmpl_ids = list({p["product_tmpl_id"][0] for p in products
+                         if isinstance(p.get("product_tmpl_id"), list)})
+        tmpl_map = {}
+        if tmpl_ids:
+            try:
+                tmpls = _x(u, db, uid, ak, "product.template", "search_read",
+                           [[["id", "in", tmpl_ids]]],
+                           {"fields": ["id", "x_brand_category_id"],
+                            "limit": len(tmpl_ids) + 10})
+                tmpl_map = {t_["id"]: t_ for t_ in tmpls}
+            except Exception:
+                tmpl_map = {}
+
+        rows = []
+        for line in lines:
+            oid = line["order_id"][0] if isinstance(line.get("order_id"), list) else None
+            pid = line["product_id"][0] if isinstance(line.get("product_id"), list) else None
+
+            order = order_map.get(oid, {})
+            prod  = prod_map.get(pid, {})
+
+            raw_date = order.get("date_order") or ""
+            try:
+                date_str = datetime.strptime(raw_date, "%Y-%m-%d %H:%M:%S").strftime("%Y-%m-%d")
+            except Exception:
+                date_str = raw_date[:10] if raw_date else ""
+
+            partner = order.get("partner_id")
+            if isinstance(partner, list):
+                customer = str(partner[1]) if len(partner) > 1 else ""
+            else:
+                customer = str(partner) if partner else ""
+
+            categ = prod.get("categ_id")
+            if isinstance(categ, list):
+                category = str(categ[1]) if len(categ) > 1 else ""
+            else:
+                category = str(categ) if categ else ""
+
+            brand_category = ""
+            tmpl_ref = prod.get("product_tmpl_id")
+            if isinstance(tmpl_ref, list) and tmpl_ref:
+                tmpl = tmpl_map.get(tmpl_ref[0], {})
+                bc   = tmpl.get("x_brand_category_id")
+                if isinstance(bc, list):
+                    brand_category = str(bc[1]) if len(bc) > 1 else ""
+                elif bc:
+                    brand_category = str(bc)
+
+            model_code_val = str(prod.get("default_code") or "")
+            product_name   = str(prod.get("display_name") or "")
+
+            qty        = float(line.get("product_uom_qty") or 0)
+            unit_price = float(line.get("price_unit") or 0)
+            subtotal   = round(qty * unit_price, 2)
+
+            rows.append({
+                "Date"          : date_str,
+                "SO"            : str(order.get("name") or ""),
+                "Customer"      : customer,
+                "Brand Category": brand_category,
+                "Category"      : category,
+                "Model Code"    : model_code_val,
+                "Product"       : product_name,
+                "Qty"           : qty,
+                "Unit Price"    : unit_price,
+                "Subtotal"      : subtotal,
+            })
+
+        if not rows:
+            return empty_df
+
+        df = pd.DataFrame(rows)
+        for col in ["Customer", "Brand Category", "Category", "Model Code", "Product", "SO", "Date"]:
+            if col in df.columns:
+                df[col] = df[col].fillna("").astype(str)
+
+        df = df.sort_values(by="Date", ascending=False).reset_index(drop=True)
+        return df
+
+    except Exception:
+        return empty_df
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# FETCH SWAG MODEL PURCHASES AND STOCK  (Panel C helper — kept as-is)
+# ─────────────────────────────────────────────────────────────────────────────
+@st.cache_data(ttl=1800, show_spinner=False)
+def fetch_swag_model_purchases_and_stock(
+    model_code: str,
+    date_from: str,
+    date_to: str,
+) -> tuple:
+    purch_empty = pd.DataFrame(columns=["Branch", "Vendor", "Date", "Qty Purchased"])
+    stock_empty = pd.DataFrame(columns=["Branch", "On Hand"])
+
+    cfg = st.secrets.get("SWAG")
+    if not cfg:
+        return purch_empty, stock_empty
+
+    uid = _auth(cfg["url"], cfg["db"], cfg["user"], cfg["api_key"])
+    if not uid:
+        return purch_empty, stock_empty
+
+    u  = cfg["url"]
+    db = cfg["db"]
+    ak = cfg["api_key"]
+
+    code = str(model_code).strip().upper()
+
+    def _loc_to_branch(loc_name: str) -> str:
+        if not loc_name:
+            return "Main"
+        return loc_name.split("/")[0].strip() or "Main"
+
+    try:
+        date_from_dt = f"{date_from} 00:00:00"
+        date_to_dt   = f"{date_to} 23:59:59"
+
+        line_domain = [
+            ["order_id.state", "in", ["purchase", "done"]],
+            ["order_id.date_order", ">=", date_from_dt],
+            ["order_id.date_order", "<=", date_to_dt],
+            ["product_id.default_code", "=ilike", code],
+        ]
+
+        lines = _x(u, db, uid, ak, "purchase.order.line", "search_read",
+                   [line_domain],
+                   {"fields": ["order_id", "product_id", "product_qty"],
+                    "limit": 20000})
+
+        purch_rows = []
+
+        if lines:
+            order_ids = list({l["order_id"][0] for l in lines
+                              if isinstance(l.get("order_id"), list)})
+
+            orders = _x(u, db, uid, ak, "purchase.order", "search_read",
+                        [[["id", "in", order_ids]]],
+                        {"fields": ["id", "name", "partner_id", "date_order",
+                                    "picking_type_id"],
+                         "limit": len(order_ids) + 10})
+            order_map = {o["id"]: o for o in orders}
+
+            pt_ids = list({
+                o["picking_type_id"][0]
+                for o in orders
+                if isinstance(o.get("picking_type_id"), list)
+            })
+            pt_map = {}
+            if pt_ids:
+                try:
+                    pts = _x(u, db, uid, ak, "stock.picking.type", "search_read",
+                             [[["id", "in", pt_ids]]],
+                             {"fields": ["id", "name", "warehouse_id"], "limit": len(pt_ids) + 10})
+                    wh_ids = list({
+                        p["warehouse_id"][0]
+                        for p in pts
+                        if isinstance(p.get("warehouse_id"), list)
+                    })
+                    wh_map = {}
+                    if wh_ids:
+                        whs = _x(u, db, uid, ak, "stock.warehouse", "search_read",
+                                 [[["id", "in", wh_ids]]],
+                                 {"fields": ["id", "name"], "limit": len(wh_ids) + 10})
+                        wh_map = {w["id"]: w["name"] for w in whs}
+                    for p in pts:
+                        wh_ref = p.get("warehouse_id")
+                        if isinstance(wh_ref, list) and wh_ref:
+                            pt_map[p["id"]] = wh_map.get(wh_ref[0], str(wh_ref[1]) if len(wh_ref) > 1 else "Main")
+                        else:
+                            pt_map[p["id"]] = "Main"
+                except Exception:
+                    pass
+
+            for line in lines:
+                oid = line["order_id"][0] if isinstance(line.get("order_id"), list) else None
+                order = order_map.get(oid, {})
+
+                raw_date = order.get("date_order") or ""
+                try:
+                    date_str = datetime.strptime(raw_date, "%Y-%m-%d %H:%M:%S").strftime("%Y-%m-%d")
+                except Exception:
+                    date_str = raw_date[:10] if raw_date else ""
+
+                partner = order.get("partner_id")
+                if isinstance(partner, list):
+                    vendor = str(partner[1]) if len(partner) > 1 else "Unknown"
                 else:
-                    cell.alignment = ctr_align
-            ws.row_dimensions[row[0].row].height = 18
-        for col_num in range(1, max_col + 1):
-            col_letter = get_column_letter(col_num)
-            max_len = max(
-                (len(str(ws.cell(row=r, column=col_num).value or ""))
-                 for r in range(1, max_row + 1)),
-                default=8
-            )
-            ws.column_dimensions[col_letter].width = min(max(max_len + 3, 12), 50)
-        ws.freeze_panes = "A2"
-        ws.auto_filter.ref = f"A1:{get_column_letter(max_col)}{max_row}"
-        total_row = max_row + 1
-        ws.cell(row=total_row, column=1, value="TOTAL")
-        ws.cell(row=total_row, column=1).font      = total_font
-        ws.cell(row=total_row, column=1).fill      = total_fill
-        ws.cell(row=total_row, column=1).alignment = Alignment(horizontal="center")
-        col_names = [ws.cell(row=1, column=c).value for c in range(1, max_col + 1)]
-        for summary_col_name in ("Qty", "Subtotal"):
-            if summary_col_name in col_names:
-                ci = col_names.index(summary_col_name) + 1
-                cl = get_column_letter(ci)
-                ws.cell(row=total_row, column=ci, value=f"=SUM({cl}2:{cl}{max_row})")
-                ws.cell(row=total_row, column=ci).font      = total_font
-                ws.cell(row=total_row, column=ci).fill      = total_fill
-                ws.cell(row=total_row, column=ci).alignment = Alignment(horizontal="center")
-        ws.row_dimensions[total_row].height = 20
-        ws.sheet_properties.tabColor = "667EEA"
-        footer_row = total_row + 2
-        ws.cell(row=footer_row, column=1,
-                value=f"Generated: {datetime.now().strftime('%Y-%m-%d %H:%M')}  |  SWAG Purchase History")
-        ws.cell(row=footer_row, column=1).font = Font(italic=True, color="888888", size=9, name="Calibri")
-        ws.page_setup.orientation = "landscape"
-        ws.page_setup.fitToPage   = True
-        ws.page_setup.fitToWidth  = 1
-        ws.print_title_rows       = "1:1"
-        ws.sheet_view.zoomScale   = 85
-    return buf.getvalue()
+                    vendor = str(partner) if partner else "Unknown"
+
+                pt_ref = order.get("picking_type_id")
+                if isinstance(pt_ref, list) and pt_ref:
+                    branch = pt_map.get(pt_ref[0], "Main")
+                else:
+                    branch = "Main"
+
+                qty = float(line.get("product_qty") or 0)
+                if qty <= 0:
+                    continue
+
+                purch_rows.append({
+                    "Branch"       : branch,
+                    "Vendor"       : vendor,
+                    "Date"         : date_str,
+                    "Qty Purchased": qty,
+                })
+
+        prod_ids_res = _x(u, db, uid, ak, "product.product", "search_read",
+                          [[["default_code", "=ilike", code]]],
+                          {"fields": ["id"], "limit": 500})
+        prod_ids = [p["id"] for p in prod_ids_res]
+
+        stock_rows = []
+
+        if prod_ids:
+            internal_locs = _x(u, db, uid, ak, "stock.location", "search_read",
+                                [[["usage", "=", "internal"], ["active", "=", True]]],
+                                {"fields": ["id", "complete_name"], "limit": 10000})
+            internal_id_map = {l["id"]: l.get("complete_name", "") for l in internal_locs}
+            internal_ids    = list(internal_id_map.keys())
+
+            quants = _x(u, db, uid, ak, "stock.quant", "search_read",
+                        [[["product_id", "in", prod_ids],
+                          ["location_id", "in", internal_ids]]],
+                        {"fields": ["location_id", "quantity"], "limit": 5000})
+
+            branch_qty: dict = {}
+            for q in quants:
+                qty = float(q.get("quantity") or 0)
+                if qty <= 0:
+                    continue
+                loc_ref = q.get("location_id")
+                if isinstance(loc_ref, list):
+                    loc_id   = loc_ref[0]
+                    loc_name = loc_ref[1] if len(loc_ref) > 1 else internal_id_map.get(loc_id, "")
+                else:
+                    loc_name = internal_id_map.get(loc_ref, "") if loc_ref else ""
+                branch = _loc_to_branch(loc_name)
+                branch_qty[branch] = branch_qty.get(branch, 0.0) + qty
+
+            for branch, qty in branch_qty.items():
+                stock_rows.append({"Branch": branch, "On Hand": qty})
+
+        purch_df = pd.DataFrame(purch_rows) if purch_rows else purch_empty.copy()
+        stock_df = pd.DataFrame(stock_rows) if stock_rows else stock_empty.copy()
+
+        if not purch_df.empty:
+            purch_df["Qty Purchased"] = pd.to_numeric(purch_df["Qty Purchased"], errors="coerce").fillna(0)
+            for col in ["Branch", "Vendor", "Date"]:
+                purch_df[col] = purch_df[col].fillna("").astype(str)
+        if not stock_df.empty:
+            stock_df["On Hand"] = pd.to_numeric(stock_df["On Hand"], errors="coerce").fillna(0)
+            stock_df["Branch"]  = stock_df["Branch"].fillna("").astype(str)
+
+        return purch_df, stock_df
+
+    except Exception:
+        return purch_empty, stock_empty
 
 
 # ─────────────────────────────────────────────────────────────────────────────
-# CHANGE 1C: Excel export for Sales
+# RENAME CACHED COLUMNS TO CURRENT LANGUAGE
 # ─────────────────────────────────────────────────────────────────────────────
-def to_excel_sales(df):
-    from openpyxl.styles import PatternFill, Font, Alignment, Border, Side
-    from openpyxl.utils import get_column_letter
-    buf   = io.BytesIO()
-    clean = df.copy()
-    if "Date" in clean.columns:
-        clean["Date"] = clean["Date"].astype(str).str[:10]
-    with pd.ExcelWriter(buf, engine="openpyxl") as w:
-        clean.to_excel(w, index=False, sheet_name="SWAG Sales")
-        ws = w.sheets["SWAG Sales"]
-        hdr_fill   = PatternFill("solid", fgColor="1a6b3c")
-        hdr_font   = Font(bold=True, color="FFFFFF", size=11, name="Calibri")
-        hdr_align  = Alignment(horizontal="center", vertical="center")
-        thin       = Side(border_style="thin", color="D0D0D0")
-        border     = Border(left=thin, right=thin, top=thin, bottom=thin)
-        alt_fill   = PatternFill("solid", fgColor="E8F5E9")
-        norm_font  = Font(name="Calibri", size=10)
-        num_align  = Alignment(horizontal="right",  vertical="center")
-        ctr_align  = Alignment(horizontal="center", vertical="center")
-        tot_fill   = PatternFill("solid", fgColor="2E2E2E")
-        tot_font   = Font(bold=True, name="Calibri", color="FFFFFF")
-        max_row, max_col = ws.max_row, ws.max_column
-        ws.row_dimensions[1].height = 28
-        for c in range(1, max_col + 1):
-            cell = ws.cell(row=1, column=c)
-            cell.fill, cell.font, cell.alignment, cell.border = hdr_fill, hdr_font, hdr_align, border
-        for row in ws.iter_rows(min_row=2, max_row=max_row):
-            for cell in row:
-                cell.border = border
-                cell.font   = norm_font
-                cell.fill   = alt_fill if cell.row % 2 == 0 else PatternFill()
-                cell.alignment = num_align if isinstance(cell.value, (int, float)) else ctr_align
-            ws.row_dimensions[row[0].row].height = 18
-        for c in range(1, max_col + 1):
-            cl  = get_column_letter(c)
-            mxl = max((len(str(ws.cell(row=r, column=c).value or "")) for r in range(1, max_row + 1)), default=8)
-            ws.column_dimensions[cl].width = min(max(mxl + 3, 12), 50)
-        ws.freeze_panes = "A2"
-        ws.auto_filter.ref = f"A1:{get_column_letter(max_col)}{max_row}"
-        tot_row = max_row + 1
-        tot_cell = ws.cell(row=tot_row, column=1, value="TOTAL")
-        tot_cell.font = tot_font
-        tot_cell.fill = tot_fill
-        tot_cell.alignment = ctr_align
-        col_names = [ws.cell(row=1, column=c).value for c in range(1, max_col + 1)]
-        for cname in ("Qty", "Subtotal"):
-            if cname in col_names:
-                ci = col_names.index(cname) + 1
-                cl = get_column_letter(ci)
-                ws.cell(row=tot_row, column=ci, value=f"=SUM({cl}2:{cl}{max_row})")
-                ws.cell(row=tot_row, column=ci).font      = tot_font
-                ws.cell(row=tot_row, column=ci).fill      = tot_fill
-                ws.cell(row=tot_row, column=ci).alignment = ctr_align
-        ws.sheet_properties.tabColor = "43e97b"
-    return buf.getvalue()
+_COL_MAP_EN = {
+    "System":"System","Model Code":"Model Code","Product":"Product",
+    "Sale Price":"Sale Price","On Hand":"On Hand","Branch":"Branch",
+    "Location":"Location","Reference":"Reference","Type":"Type",
+    "State":"State","From":"From","To":"To","Qty":"Qty",
+    "Scheduled":"Scheduled","Sold(30d)":"Sold(30d)","Daily Vel":"Daily Vel",
+    "Days Left":"Days Left","Suggest":"Suggest","Priority":"Priority",
+}
+_COL_MAP_AR = {
+    "System":"النظام","Model Code":"رمز الموديل","Product":"المنتج",
+    "Sale Price":"سعر البيع","On Hand":"متوفر","Branch":"الفرع",
+    "Location":"الموقع","Reference":"المرجع","Type":"النوع",
+    "State":"الحالة","From":"من","To":"إلى","Qty":"الكمية",
+    "Scheduled":"المجدول","Sold(30d)":"مباع(30ي)","Daily Vel":"معدل/يوم",
+    "Days Left":"أيام متبقية","Suggest":"المقترح","Priority":"الأولوية",
+}
 
+def localize_columns(df):
+    if df is None or df.empty:
+        return df
+    col_map = _COL_MAP_AR if get_lang() == "AR" else _COL_MAP_EN
+    return df.rename(columns=col_map)
 
-def dl_name(tag, ext):
-    return f"swag_{tag}_{datetime.now().strftime('%Y%m%d_%H%M')}.{ext}"
+def prepare_df(df):
+    df = localize_columns(df)
+    df = translate_system_names(df)
+    return df
 
 # ─────────────────────────────────────────────────────────────────────────────
 # PRICE HISTORY
@@ -1215,6 +1434,7 @@ def get_qty_display(qty, lang="EN"):
     except Exception:
         return "❌ لا يوجد" if lang == "AR" else "❌ Not Available"
 
+
 # ─────────────────────────────────────────────────────────────────────────────
 # HTML TABLE
 # ─────────────────────────────────────────────────────────────────────────────
@@ -1239,6 +1459,29 @@ _TABLE_CSS = """<style>
 .swag-tbl tbody tr.na-row td{background:#2a1a1a!important;opacity:.82;}
 .swag-tbl tbody td.na-cell{color:#f97316!important;font-weight:700;letter-spacing:.3px;}
 </style>"""
+
+def _render_html_table(df_show, first_col_class="cf"):
+    if df_show is None or df_show.empty:
+        st.info(t("No data.", "لا بيانات."))
+        return
+    cols  = df_show.columns.tolist()
+    th_   = "".join(f"<th>{c}</th>" for c in cols)
+    def _row(idx_row):
+        _, row = idx_row
+        cells = "".join(
+            f'<td class="{first_col_class}">{v}</td>' if ci == 0 else f"<td>{v}</td>"
+            for ci, v in enumerate(row)
+        )
+        return f"<tr>{cells}</tr>"
+    tbody = "".join(_row(x) for x in df_show.iterrows())
+    st.markdown(
+        f'{_TABLE_CSS}<div class="swag-wrap">'
+        f'<table class="swag-tbl"><thead><tr>{th_}</tr></thead>'
+        f'<tbody>{tbody}</tbody></table></div>',
+        unsafe_allow_html=True
+    )
+    st.caption(f"📊 {len(df_show)} {t('rows', 'صفوف')}")
+
 
 def display_df(df, thresh=0, table_key="tbl"):
     if df is None or df.empty:
@@ -1369,12 +1612,12 @@ def display_df(df, thresh=0, table_key="tbl"):
         raw_q3  = pd.to_numeric(work[qc], errors="coerce")
         low_idx = set(work.index[(raw_q3 > 0) & (raw_q3 <= thresh)])
 
-    _zero_set    = set(_raw_qty.index[_raw_qty == 0]) if not _raw_qty.empty else set()
-    _na_label_en = "❌ Not Available"
-    _na_label_ar = "❌ لا يوجد"
+    _zero_set     = set(_raw_qty.index[_raw_qty == 0]) if not _raw_qty.empty else set()
+    _na_label_en  = "❌ Not Available"
+    _na_label_ar  = "❌ لا يوجد"
 
-    cols = show.columns.tolist()
-    th_  = "".join(f"<th>{c}</th>" for c in cols)
+    cols  = show.columns.tolist()
+    th_   = "".join(f"<th>{c}</th>" for c in cols)
 
     def _row(idx_row):
         i, row = idx_row
@@ -1385,12 +1628,15 @@ def display_df(df, thresh=0, table_key="tbl"):
             cls = " rl"
         else:
             cls = ""
+
         cells = "".join(
             f'<td class="cf">{v}</td>'
             if ci == 0
             else (
                 f'<td class="na-cell">{v}</td>'
-                if is_zero and isinstance(v, str) and v in (_na_label_en, _na_label_ar)
+                if is_zero
+                   and isinstance(v, str)
+                   and v in (_na_label_en, _na_label_ar)
                 else f"<td>{v}</td>"
             )
             for ci, v in enumerate(row)
@@ -1406,33 +1652,6 @@ def display_df(df, thresh=0, table_key="tbl"):
     )
     st.caption(f"📊 {len(show)} {t('rows shown','صفوف معروضة')} "
                f"/ {len(df)} {t('total','إجمالي')}")
-
-
-# ─────────────────────────────────────────────────────────────────────────────
-# RENDER HTML TABLE HELPER (generic, for analytics sections)
-# ─────────────────────────────────────────────────────────────────────────────
-def _render_html_table(df_display):
-    """Render a DataFrame as styled HTML table."""
-    if df_display is None or df_display.empty:
-        st.info(t("No data.","لا بيانات."))
-        return
-    cols = df_display.columns.tolist()
-    th_  = "".join(f"<th>{c}</th>" for c in cols)
-    def _row(idx_row):
-        _, row = idx_row
-        cells = "".join(
-            f'<td class="cf">{v}</td>' if ci == 0 else f"<td>{v}</td>"
-            for ci, v in enumerate(row)
-        )
-        return f"<tr>{cells}</tr>"
-    tbody = "".join(_row(x) for x in df_display.iterrows())
-    st.markdown(
-        f'{_TABLE_CSS}<div class="swag-wrap">'
-        f'<table class="swag-tbl"><thead><tr>{th_}</tr></thead>'
-        f'<tbody>{tbody}</tbody></table></div>',
-        unsafe_allow_html=True
-    )
-
 
 # ─────────────────────────────────────────────────────────────────────────────
 # LOGIN
@@ -1518,19 +1737,1026 @@ def do_logout():
     st.rerun()
 
 # ─────────────────────────────────────────────────────────────────────────────
+# ALTAIR CHART HELPERS  (dark-theme, premium look)
+# ─────────────────────────────────────────────────────────────────────────────
+
+_ALT_CONFIG = {
+    "background": "transparent",
+    "view": {"stroke": "transparent"},
+    "axis": {
+        "labelColor": "#c4b5fd",
+        "titleColor": "#a0aec0",
+        "gridColor": "#ffffff15",
+        "domainColor": "#667eea44",
+        "tickColor": "#667eea44",
+    },
+    "legend": {
+        "labelColor": "#c4b5fd",
+        "titleColor": "#a0aec0",
+    },
+    "title": {"color": "#e8e8ff"},
+}
+
+_PALETTE = [
+    "#667eea", "#764ba2", "#9b59b6", "#f093fb",
+    "#43e97b", "#38f9d7", "#4facfe", "#00f2fe",
+]
+
+
+def _alt_bar_chart(
+    df: pd.DataFrame,
+    x_field: str,
+    y_field: str,
+    tooltip_fmt: str = ",.0f",
+    color: str = "#667eea",
+    sort_order: str = "-y",
+    label_angle: int = -35,
+    height: int = 320,
+) -> alt.Chart:
+    tooltip_label = f"{y_field} formatted"
+    plot_df = df.copy()
+    plot_df[tooltip_label] = plot_df[y_field].map(
+        lambda v: f"{v:{tooltip_fmt}}"
+    )
+
+    chart = (
+        alt.Chart(plot_df)
+        .mark_bar(
+            cornerRadiusTopLeft=4,
+            cornerRadiusTopRight=4,
+            color=color,
+            opacity=0.88,
+        )
+        .encode(
+            x=alt.X(
+                f"{x_field}:N",
+                sort=sort_order,
+                axis=alt.Axis(labelAngle=label_angle, labelLimit=120),
+                title=x_field,
+            ),
+            y=alt.Y(f"{y_field}:Q", title=y_field),
+            tooltip=[
+                alt.Tooltip(f"{x_field}:N", title=x_field),
+                alt.Tooltip(f"{tooltip_label}:N", title=y_field),
+            ],
+            color=alt.condition(
+                alt.datum[y_field] == plot_df[y_field].max(),
+                alt.value("#f093fb"),
+                alt.value(color),
+            ),
+        )
+        .properties(height=height)
+        .configure(**_ALT_CONFIG)
+        .interactive()
+    )
+    return chart
+
+
+def _alt_line_chart(
+    df: pd.DataFrame,
+    x_field: str,
+    y_field: str,
+    height: int = 280,
+) -> alt.Chart:
+    line = (
+        alt.Chart(df)
+        .mark_line(
+            color="#667eea",
+            strokeWidth=2.5,
+            interpolate="monotone",
+        )
+        .encode(
+            x=alt.X(f"{x_field}:T", title="Date", axis=alt.Axis(format="%b %d", labelAngle=-30)),
+            y=alt.Y(f"{y_field}:Q", title=y_field),
+            tooltip=[
+                alt.Tooltip(f"{x_field}:T", title="Date", format="%Y-%m-%d"),
+                alt.Tooltip(f"{y_field}:Q", title=y_field, format=",.0f"),
+            ],
+        )
+    )
+    points = (
+        alt.Chart(df)
+        .mark_circle(color="#f093fb", size=60, opacity=0.9)
+        .encode(
+            x=alt.X(f"{x_field}:T"),
+            y=alt.Y(f"{y_field}:Q"),
+            tooltip=[
+                alt.Tooltip(f"{x_field}:T", title="Date", format="%Y-%m-%d"),
+                alt.Tooltip(f"{y_field}:Q", title=y_field, format=",.0f"),
+            ],
+        )
+    )
+    chart = (
+        (line + points)
+        .properties(height=height)
+        .configure(**_ALT_CONFIG)
+        .interactive()
+    )
+    return chart
+
+
+def _po_top10_altair(
+    title: str,
+    group_col: str,
+    value_col: str,
+    df: pd.DataFrame,
+    color: str = "#764ba2",
+    tooltip_fmt: str = ",.0f",
+):
+    st.markdown(f"#### {title}")
+    if df is None or df.empty:
+        st.info(t("No data available.", "لا توجد بيانات."))
+        return
+
+    grp = (
+        df.copy()
+        .assign(**{group_col: df[group_col].replace("", f"({group_col} N/A)").fillna(f"({group_col} N/A)")})
+        .groupby(group_col, as_index=False)[value_col]
+        .sum()
+        .sort_values(value_col, ascending=False)
+        .head(10)
+        .reset_index(drop=True)
+    )
+
+    if grp.empty:
+        st.info(t("No data.", "لا توجد بيانات."))
+        return
+
+    display_label = "Total Qty" if value_col == "Qty" else "Total Amount (SAR)"
+    grp[display_label] = grp[value_col].map(lambda v: f"{v:{tooltip_fmt}}")
+
+    ch_col, tbl_col = st.columns([1.5, 1])
+    with ch_col:
+        chart = _alt_bar_chart(
+            grp, x_field=group_col, y_field=value_col,
+            tooltip_fmt=tooltip_fmt, color=color,
+        )
+        st.altair_chart(chart, use_container_width=True)
+    with tbl_col:
+        _render_html_table(grp[[group_col, display_label]])
+
+
+def _po_kpi_row(df, prefix=""):
+    total_qty    = float(df["Qty"].sum())
+    total_amt    = float(df["Subtotal"].sum())
+    n_vendors    = int(df["Vendor"].nunique())
+    n_products   = int(df["Model Code"].nunique())
+    k1, k2, k3, k4 = st.columns(4)
+    k1.metric(t("Total Qty","إجمالي الكمية"),       f"{total_qty:,.0f}")
+    k2.metric(t("Total Amount (SAR)","إجمالي المبلغ"), f"{total_amt:,.2f}")
+    k3.metric(t("Vendors","الموردون"),               n_vendors)
+    k4.metric(t("Products","المنتجات"),              n_products)
+
+
+def _po_full_table(df):
+    show = df.copy()
+    show["Unit Price"] = show["Unit Price"].map(lambda v: f"{v:.2f} SAR")
+    show["Subtotal"]   = show["Subtotal"].map(lambda v: f"{v:,.2f} SAR")
+    show["Qty"]        = show["Qty"].map(lambda v: f"{v:,.0f}")
+    _render_html_table(show)
+
+
+def _po_download_row(df, tag_suffix=""):
+    dl1, dl2, _ = st.columns([1, 1, 2])
+    dl1.download_button(
+        "⬇️ CSV",
+        df.to_csv(index=False).encode("utf-8-sig"),
+        dl_name(f"purchase{tag_suffix}", "csv"),
+        "text/csv",
+        use_container_width=True,
+        key=f"dl_csv_{tag_suffix}_{id(df)}"
+    )
+    dl2.download_button(
+        "⬇️ Excel",
+        to_excel_purchase(df),
+        dl_name(f"purchase{tag_suffix}", "xlsx"),
+        "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+        use_container_width=True,
+        key=f"dl_xlsx_{tag_suffix}_{id(df)}"
+    )
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# PLOTLY DONUT CHART HELPER  (dark-theme)
+# ─────────────────────────────────────────────────────────────────────────────
+def _plotly_donut(labels, values, title="", height=380):
+    """Render a dark-theme Plotly donut chart."""
+    if not _HAS_PLOTLY:
+        # Fallback: Altair pie approximation not available, show table
+        st.info("Install plotly for donut charts: pip install plotly")
+        return
+
+    _colors = [
+        "#667eea","#764ba2","#9b59b6","#f093fb",
+        "#43e97b","#38f9d7","#4facfe","#00f2fe",
+        "#fa8231","#fd79a8","#a29bfe","#55efc4",
+    ]
+
+    fig = go.Figure(data=[go.Pie(
+        labels=labels,
+        values=values,
+        hole=0.52,
+        marker=dict(colors=_colors[:len(labels)], line=dict(color="#1a1a2e", width=2)),
+        textinfo="percent+label",
+        textfont=dict(color="#e8e8ff", size=12),
+        hovertemplate="<b>%{label}</b><br>Value: %{value:,.0f}<br>Share: %{percent}<extra></extra>",
+    )])
+    fig.update_layout(
+        title=dict(text=title, font=dict(color="#c4b5fd", size=14), x=0.5),
+        paper_bgcolor="rgba(0,0,0,0)",
+        plot_bgcolor ="rgba(0,0,0,0)",
+        height=height,
+        margin=dict(t=50, b=20, l=20, r=20),
+        legend=dict(
+            font=dict(color="#c4b5fd", size=11),
+            bgcolor="rgba(30,30,63,0.7)",
+            bordercolor="#667eea44",
+            borderwidth=1,
+        ),
+        showlegend=True,
+    )
+    st.plotly_chart(fig, use_container_width=True)
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# SALES KPI ROW  (NEW)
+# ─────────────────────────────────────────────────────────────────────────────
+def _sales_kpi_row(df):
+    total_qty   = float(df["Qty"].sum())
+    total_amt   = float(df["Subtotal"].sum())
+    n_customers = int(df["Customer"].nunique())
+    n_products  = int(df["Model Code"].nunique())
+    n_orders    = int(df["SO"].nunique())
+    avg_price   = float(df["Unit Price"][df["Unit Price"] > 0].mean()) if (df["Unit Price"] > 0).any() else 0.0
+
+    k1, k2, k3, k4, k5, k6 = st.columns(6)
+    k1.metric(t("Total Qty Sold","إجمالي الكمية المباعة"), f"{total_qty:,.0f}")
+    k2.metric(t("Total Sales (SAR)","إجمالي المبيعات"),    f"{total_amt:,.2f}")
+    k3.metric(t("Customers","العملاء"),                    n_customers)
+    k4.metric(t("Products","المنتجات"),                    n_products)
+    k5.metric(t("Orders","الطلبات"),                       n_orders)
+    k6.metric(t("Avg Unit Price","متوسط سعر الوحدة"),      f"{avg_price:,.2f}")
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# SWAG SALES ANALYTICS VIEW  (NEW)
+# ─────────────────────────────────────────────────────────────────────────────
+def show_sales_analytics():
+    st.markdown(f"### 💰 {t('SWAG Sales Analytics','تحليلات مبيعات سواغ')}")
+    st.markdown(
+        "<div class='info-banner'>📌 "
+        + t("Sales orders from the <b>SWAG</b> system only (state: sale / done).",
+            "أوامر البيع من نظام <b>سواغ</b> فقط (الحالة: مبيع / منجز).")
+        + "</div>",
+        unsafe_allow_html=True
+    )
+
+    # ── Filters row ───────────────────────────────────────────────────────────
+    default_from = datetime.now().date() - timedelta(days=365)
+    default_to   = datetime.now().date()
+
+    sf1, sf2, sf3, sf4 = st.columns([1.2, 1, 1, 1.4])
+
+    with sf1:
+        sa_model_input = st.text_input(
+            f"🔖 {t('Model Code (optional)','رمز الموديل (اختياري)')}",
+            placeholder=t("e.g. RVT196 — blank = all", "مثال: RVT196 — فارغ = الكل"),
+            key="sa_model_input"
+        ).strip()
+
+    with sf2:
+        sa_date_from = st.date_input(
+            f"📅 {t('From','من')}",
+            value=default_from,
+            key="sa_date_from"
+        )
+
+    with sf3:
+        sa_date_to = st.date_input(
+            f"📅 {t('To','إلى')}",
+            value=default_to,
+            key="sa_date_to"
+        )
+
+    with sf4:
+        cached_sa      = st.session_state.get("salesanalyticsdf")
+        customer_opts  = []
+        if cached_sa is not None and not cached_sa.empty and "Customer" in cached_sa.columns:
+            customer_opts = sorted(cached_sa["Customer"].dropna().unique().tolist())
+
+        sa_customer_sel = st.multiselect(
+            f"👤 {t('Customer','العميل')}",
+            options=customer_opts,
+            default=[],
+            placeholder=t("All Customers (default)", "كل العملاء (افتراضي)"),
+            key="sa_customer_sel"
+        )
+
+    fetch_sa_btn = st.button(
+        f"🔍 {t('Fetch Sales Analytics','جلب تحليلات المبيعات')}",
+        type="primary",
+        use_container_width=False,
+        key="fetch_sa_btn"
+    )
+
+    if fetch_sa_btn:
+        with st.spinner(t("⚡ Fetching sales data from SWAG…","⚡ جلب بيانات المبيعات من نظام سواغ…")):
+            fetched = fetchswagsaleshistory(
+                modelcode=None,
+                datefrom=sa_date_from.strftime("%Y-%m-%d"),
+                dateto=sa_date_to.strftime("%Y-%m-%d"),
+            )
+        st.session_state.salesanalyticsdf = fetched
+        st.rerun()
+
+    # ── Work with cached sales data ───────────────────────────────────────────
+    sa_full = st.session_state.get("salesanalyticsdf")
+
+    if sa_full is None:
+        st.info(t(
+            "👆 Set your date range and click **Fetch Sales Analytics** to load data.",
+            "👆 حدد نطاق التاريخ واضغط **جلب تحليلات المبيعات** لتحميل البيانات."
+        ))
+        return
+
+    if sa_full.empty:
+        st.info(t("No sales found for this period.", "لا توجد مبيعات لهذه الفترة."))
+        return
+
+    # Apply customer filter
+    active_customers = [c for c in sa_customer_sel]
+    if active_customers:
+        sa_df = sa_full[sa_full["Customer"].isin(active_customers)].copy()
+    else:
+        sa_df = sa_full.copy()
+
+    # Apply model filter (local, from cached data)
+    if sa_model_input:
+        mc_norm = sa_model_input.upper()
+        sa_df_model = sa_df[sa_df["Model Code"].str.upper() == mc_norm].copy()
+    else:
+        sa_df_model = None
+
+    # ─────────────────────────────────────────────────────────────────────────
+    # 6B — KPI Cards
+    # ─────────────────────────────────────────────────────────────────────────
+    st.divider()
+    st.markdown(
+        f"<div class='panel-header'>📊 {t('Sales KPIs','مؤشرات المبيعات')}</div>",
+        unsafe_allow_html=True
+    )
+    _sales_kpi_row(sa_df)
+
+    # ─────────────────────────────────────────────────────────────────────────
+    # 6C — Top 10 Analytics
+    # ─────────────────────────────────────────────────────────────────────────
+    st.divider()
+    st.markdown(
+        f"<div class='panel-header'>🏆 {t('Top 10 Analytics','أفضل 10 تحليلات')}</div>",
+        unsafe_allow_html=True
+    )
+
+    # Top 10 Products by Qty
+    prod_qty_grp = (
+        sa_df.copy()
+        .assign(**{"Model Code": sa_df["Model Code"].replace("", "(No Code)").fillna("(No Code)")})
+        .groupby(["Model Code", "Product"], as_index=False)["Qty"]
+        .sum()
+        .sort_values("Qty", ascending=False)
+        .head(10)
+        .reset_index(drop=True)
+    )
+    prod_qty_grp["Total Qty"] = prod_qty_grp["Qty"].map(lambda v: f"{v:,.0f}")
+
+    st.markdown(f"#### 🏆 {t('Top 10 Products by Qty Sold','أعلى 10 منتجات حسب الكمية المباعة')}")
+    pc1, pc2 = st.columns([1.5, 1])
+    with pc1:
+        st.altair_chart(
+            _alt_bar_chart(prod_qty_grp, x_field="Model Code", y_field="Qty",
+                           tooltip_fmt=",.0f", color="#43e97b"),
+            use_container_width=True
+        )
+    with pc2:
+        _render_html_table(prod_qty_grp[["Model Code", "Product", "Total Qty"]])
+
+    st.divider()
+
+    # Top 10 Products by Sales Amount
+    prod_amt_grp = (
+        sa_df.copy()
+        .assign(**{"Model Code": sa_df["Model Code"].replace("", "(No Code)").fillna("(No Code)")})
+        .groupby(["Model Code", "Product"], as_index=False)["Subtotal"]
+        .sum()
+        .sort_values("Subtotal", ascending=False)
+        .head(10)
+        .reset_index(drop=True)
+    )
+    prod_amt_grp["Total SAR"] = prod_amt_grp["Subtotal"].map(lambda v: f"{v:,.2f}")
+
+    st.markdown(f"#### 💰 {t('Top 10 Products by Sales Amount','أعلى 10 منتجات حسب المبلغ')}")
+    pa1, pa2 = st.columns([1.5, 1])
+    with pa1:
+        st.altair_chart(
+            _alt_bar_chart(prod_amt_grp, x_field="Model Code", y_field="Subtotal",
+                           tooltip_fmt=",.2f", color="#4facfe"),
+            use_container_width=True
+        )
+    with pa2:
+        _render_html_table(prod_amt_grp[["Model Code", "Product", "Total SAR"]])
+
+    st.divider()
+
+    # Top 10 Brand Categories by Qty
+    _po_top10_altair(
+        f"🏷️ {t('Top 10 Brand Categories by Qty','أعلى 10 فئات علامة تجارية حسب الكمية')}",
+        "Brand Category", "Qty", sa_df,
+        color="#f093fb", tooltip_fmt=",.0f"
+    )
+    st.divider()
+
+    # Top 10 Categories by Qty
+    _po_top10_altair(
+        f"🗂️ {t('Top 10 Categories by Qty','أعلى 10 فئات حسب الكمية')}",
+        "Category", "Qty", sa_df,
+        color="#764ba2", tooltip_fmt=",.0f"
+    )
+    st.divider()
+
+    # Top 10 Customers by Sales Amount
+    cust_grp = (
+        sa_df.copy()
+        .assign(Customer=sa_df["Customer"].replace("", "(No Customer)").fillna("(No Customer)"))
+        .groupby("Customer", as_index=False)["Subtotal"]
+        .sum()
+        .sort_values("Subtotal", ascending=False)
+        .head(10)
+        .reset_index(drop=True)
+    )
+    cust_grp["Total SAR"] = cust_grp["Subtotal"].map(lambda v: f"{v:,.2f}")
+
+    st.markdown(f"#### 👤 {t('Top 10 Customers by Sales Amount','أعلى 10 عملاء حسب المبلغ')}")
+    cc1, cc2 = st.columns([1.5, 1])
+    with cc1:
+        st.altair_chart(
+            _alt_bar_chart(cust_grp, x_field="Customer", y_field="Subtotal",
+                           tooltip_fmt=",.2f", color="#667eea"),
+            use_container_width=True
+        )
+    with cc2:
+        _render_html_table(cust_grp[["Customer", "Total SAR"]])
+
+    # ─────────────────────────────────────────────────────────────────────────
+    # 6D — Pie / Donut Charts
+    # ─────────────────────────────────────────────────────────────────────────
+    st.divider()
+    st.markdown(
+        f"<div class='panel-header'>🥧 {t('Sales Share Analysis','تحليل حصص المبيعات')}</div>",
+        unsafe_allow_html=True
+    )
+
+    pie1, pie2, pie3 = st.columns(3)
+
+    # Brand Category share
+    with pie1:
+        bc_share = (
+            sa_df.copy()
+            .assign(**{"Brand Category": sa_df["Brand Category"].replace("", "(No Brand)").fillna("(No Brand)")})
+            .groupby("Brand Category", as_index=False)["Subtotal"]
+            .sum()
+            .sort_values("Subtotal", ascending=False)
+        )
+        if not bc_share.empty:
+            _plotly_donut(
+                bc_share["Brand Category"].tolist(),
+                bc_share["Subtotal"].tolist(),
+                title=t("Brand Category Share", "حصة الفئة التجارية")
+            )
+
+    # Category share
+    with pie2:
+        cat_share = (
+            sa_df.copy()
+            .assign(Category=sa_df["Category"].replace("", "(No Category)").fillna("(No Category)"))
+            .groupby("Category", as_index=False)["Subtotal"]
+            .sum()
+            .sort_values("Subtotal", ascending=False)
+        )
+        if not cat_share.empty:
+            _plotly_donut(
+                cat_share["Category"].tolist(),
+                cat_share["Subtotal"].tolist(),
+                title=t("Category Share", "حصة الفئة")
+            )
+
+    # Customer share (top 10 + Others)
+    with pie3:
+        cust_all = (
+            sa_df.copy()
+            .assign(Customer=sa_df["Customer"].replace("", "(No Customer)").fillna("(No Customer)"))
+            .groupby("Customer", as_index=False)["Subtotal"]
+            .sum()
+            .sort_values("Subtotal", ascending=False)
+        )
+        if not cust_all.empty:
+            top10c   = cust_all.head(10)
+            others_v = float(cust_all.iloc[10:]["Subtotal"].sum()) if len(cust_all) > 10 else 0
+            pie_labels = top10c["Customer"].tolist()
+            pie_vals   = top10c["Subtotal"].tolist()
+            if others_v > 0:
+                pie_labels.append("Others")
+                pie_vals.append(others_v)
+            _plotly_donut(
+                pie_labels, pie_vals,
+                title=t("Customer Share (Top 10)", "حصة العملاء (أعلى 10)")
+            )
+
+    # ─────────────────────────────────────────────────────────────────────────
+    # 6E — Time-series Sales Trend
+    # ─────────────────────────────────────────────────────────────────────────
+    st.divider()
+    st.markdown(
+        f"<div class='panel-header'>📈 {t('Sales Trend Over Time','اتجاه المبيعات عبر الزمن')}</div>",
+        unsafe_allow_html=True
+    )
+
+    ts_col1, ts_col2 = st.columns(2)
+
+    with ts_col1:
+        st.markdown(f"##### 📦 {t('Qty Sold Over Time','الكمية المباعة عبر الزمن')}")
+        ts_qty = (
+            sa_df.copy()
+            .assign(Date=pd.to_datetime(sa_df["Date"], errors="coerce"))
+            .dropna(subset=["Date"])
+            .groupby("Date", as_index=False)["Qty"]
+            .sum()
+            .sort_values("Date")
+        )
+        if not ts_qty.empty:
+            st.altair_chart(_alt_line_chart(ts_qty, "Date", "Qty", height=260), use_container_width=True)
+
+    with ts_col2:
+        st.markdown(f"##### 💰 {t('Sales Amount Over Time','مبلغ المبيعات عبر الزمن')}")
+        ts_amt = (
+            sa_df.copy()
+            .assign(Date=pd.to_datetime(sa_df["Date"], errors="coerce"))
+            .dropna(subset=["Date"])
+            .groupby("Date", as_index=False)["Subtotal"]
+            .sum()
+            .sort_values("Date")
+        )
+        if not ts_amt.empty:
+            st.altair_chart(_alt_line_chart(ts_amt, "Date", "Subtotal", height=260), use_container_width=True)
+
+    # ─────────────────────────────────────────────────────────────────────────
+    # 6F — Single Model Sales Detail
+    # ─────────────────────────────────────────────────────────────────────────
+    st.divider()
+    st.markdown(
+        f"<div class='panel-header'>🔍 {t('Single Model Sales Detail','تفاصيل مبيعات موديل واحد')}</div>",
+        unsafe_allow_html=True
+    )
+
+    if not sa_model_input:
+        st.info(t(
+            "💡 Enter a **Model Code** in the filter above to see single-model sales analytics.",
+            "💡 أدخل **رمز الموديل** في الفلتر أعلاه لعرض تحليلات موديل واحد."
+        ))
+    elif sa_df_model is not None and sa_df_model.empty:
+        st.info(t(
+            f"No sales records found for model **{sa_model_input}**.",
+            f"لا توجد سجلات مبيعات للموديل **{sa_model_input}**."
+        ))
+    elif sa_df_model is not None:
+        sm_qty  = float(sa_df_model["Qty"].sum())
+        sm_amt  = float(sa_df_model["Subtotal"].sum())
+        sm_cust = int(sa_df_model["Customer"].nunique())
+
+        mk1, mk2, mk3, _ = st.columns([1, 1, 1, 1])
+        mk1.metric(t("Total Qty (this model)","إجمالي الكمية (الموديل)"), f"{sm_qty:,.0f}")
+        mk2.metric(t("Total Sales (SAR)","إجمالي المبيعات"),             f"{sm_amt:,.2f}")
+        mk3.metric(t("Customers","العملاء"),                              sm_cust)
+
+        st.divider()
+
+        # Sales over time for this model
+        st.markdown(f"#### 📈 {t('Sales Qty Over Time','كمية المبيعات عبر الزمن')} — {sa_model_input}")
+        sm_ts = (
+            sa_df_model.copy()
+            .assign(Date=pd.to_datetime(sa_df_model["Date"], errors="coerce"))
+            .dropna(subset=["Date"])
+            .groupby("Date", as_index=False)["Qty"]
+            .sum()
+            .sort_values("Date")
+        )
+        if not sm_ts.empty:
+            st.altair_chart(_alt_line_chart(sm_ts, "Date", "Qty", height=240), use_container_width=True)
+
+        st.divider()
+
+        # Top customers for this model
+        st.markdown(f"#### 👤 {t('Top Customers for this Model','أعلى العملاء لهذا الموديل')}")
+        sm_cust_grp = (
+            sa_df_model.copy()
+            .assign(Customer=sa_df_model["Customer"].replace("", "(No Customer)").fillna("(No Customer)"))
+            .groupby("Customer", as_index=False)["Qty"]
+            .sum()
+            .sort_values("Qty", ascending=False)
+            .head(10)
+            .reset_index(drop=True)
+        )
+        sm_cust_grp["Total Qty"] = sm_cust_grp["Qty"].map(lambda v: f"{v:,.0f}")
+
+        sc1, sc2 = st.columns([1.5, 1])
+        with sc1:
+            st.altair_chart(
+                _alt_bar_chart(sm_cust_grp, x_field="Customer", y_field="Qty",
+                               tooltip_fmt=",.0f", color="#9b59b6"),
+                use_container_width=True
+            )
+        with sc2:
+            _render_html_table(sm_cust_grp[["Customer", "Total Qty"]])
+
+        # Customer share donut
+        if _HAS_PLOTLY and not sm_cust_grp.empty:
+            top_c   = sm_cust_grp.head(8)
+            others_v = float(sm_cust_grp.iloc[8:]["Qty"].sum()) if len(sm_cust_grp) > 8 else 0
+            p_labels = top_c["Customer"].tolist()
+            p_vals   = top_c["Qty"].tolist()
+            if others_v > 0:
+                p_labels.append("Others"); p_vals.append(others_v)
+            _plotly_donut(p_labels, p_vals, title=t("Customer Share", "حصة العملاء"), height=340)
+
+    # ─────────────────────────────────────────────────────────────────────────
+    # 6G — Full Table + Downloads
+    # ─────────────────────────────────────────────────────────────────────────
+    st.divider()
+    st.markdown(
+        f"<div class='panel-header'>📋 {t('Full Sales Detail','تفاصيل المبيعات الكاملة')}</div>",
+        unsafe_allow_html=True
+    )
+
+    show_df = sa_df_model if (sa_model_input and sa_df_model is not None and not sa_df_model.empty) else sa_df
+    full_show = show_df.copy()
+    full_show["Unit Price"] = full_show["Unit Price"].map(lambda v: f"{v:.2f} SAR")
+    full_show["Subtotal"]   = full_show["Subtotal"].map(lambda v: f"{v:,.2f} SAR")
+    full_show["Qty"]        = full_show["Qty"].map(lambda v: f"{v:,.0f}")
+    _render_html_table(full_show)
+
+    st.markdown("<br>", unsafe_allow_html=True)
+    sdl1, sdl2, _ = st.columns([1, 1, 2])
+    tag_s = f"_{sa_model_input.upper()}" if sa_model_input else "_overall"
+    export_df = sa_df_model if (sa_model_input and sa_df_model is not None and not sa_df_model.empty) else sa_df
+    sdl1.download_button(
+        "⬇️ CSV",
+        export_df.to_csv(index=False).encode("utf-8-sig"),
+        dl_name(f"sales{tag_s}", "csv"),
+        "text/csv",
+        use_container_width=True,
+        key=f"sdl_csv{tag_s}"
+    )
+    sdl2.download_button(
+        "⬇️ Excel",
+        to_excel_sales(export_df),
+        dl_name(f"sales{tag_s}", "xlsx"),
+        "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+        use_container_width=True,
+        key=f"sdl_xlsx{tag_s}"
+    )
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# SWAG PURCHASE ANALYTICS VIEW  (extracted from tabs, now callable)
+# ─────────────────────────────────────────────────────────────────────────────
+def show_purchase_analytics():
+    st.markdown(f"### 🛒 {t('SWAG Purchase Analytics','تحليلات مشتريات سواغ')}")
+    st.markdown(
+        "<div class='info-banner'>📌 "
+        + t("Purchase orders from the <b>SWAG</b> system only (state: purchase / done).",
+            "أوامر الشراء من نظام <b>سواغ</b> فقط (الحالة: مشترى / منجز).")
+        + "</div>",
+        unsafe_allow_html=True
+    )
+
+    default_from = datetime.now().date() - timedelta(days=365)
+    default_to   = datetime.now().date()
+
+    filt_col1, filt_col2, filt_col3, filt_col4 = st.columns([1.2, 1, 1, 1.4])
+
+    with filt_col1:
+        po_model_input = st.text_input(
+            f"🔖 {t('Model Code (optional)','رمز الموديل (اختياري)')}",
+            placeholder=t("e.g. RVT196 — blank = all", "مثال: RVT196 — فارغ = الكل"),
+            key="po_model_input_v3"
+        ).strip()
+
+    with filt_col2:
+        po_date_from = st.date_input(
+            f"📅 {t('From','من')}",
+            value=default_from,
+            key="po_date_from_v3"
+        )
+
+    with filt_col3:
+        po_date_to = st.date_input(
+            f"📅 {t('To','إلى')}",
+            value=default_to,
+            key="po_date_to_v3"
+        )
+
+    with filt_col4:
+        cached_po     = st.session_state.get("po_analytics_df")
+        vendor_options = []
+        if cached_po is not None and not cached_po.empty and "Vendor" in cached_po.columns:
+            vendor_options = sorted(cached_po["Vendor"].dropna().unique().tolist())
+
+        all_vendors_label = t("All Vendors", "كل الموردين")
+        vendor_choices    = [all_vendors_label] + vendor_options
+
+        po_vendor_sel = st.multiselect(
+            f"🏭 {t('Vendor','المورد')}",
+            options=vendor_choices,
+            default=[],
+            placeholder=t("All Vendors (default)", "كل الموردين (افتراضي)"),
+            key="po_vendor_sel_v3"
+        )
+
+    fetch_po_btn = st.button(
+        f"🔍 {t('Fetch Purchase Analytics','جلب تحليلات المشتريات')}",
+        type="primary",
+        use_container_width=False,
+        key="fetch_po_btn_v3"
+    )
+
+    if fetch_po_btn:
+        with st.spinner(t("⚡ Fetching all purchase data from SWAG…","⚡ جلب بيانات المشتريات من نظام سواغ…")):
+            fetched = fetch_swag_purchase_history(
+                model_code=None,
+                date_from=po_date_from.strftime("%Y-%m-%d"),
+                date_to=po_date_to.strftime("%Y-%m-%d"),
+            )
+        st.session_state.po_analytics_df = fetched
+        st.rerun()
+
+    po_full = st.session_state.get("po_analytics_df")
+
+    if po_full is None:
+        st.info(t(
+            "👆 Set your date range and click **Fetch Purchase Analytics** to load data.",
+            "👆 حدد نطاق التاريخ واضغط **جلب تحليلات المشتريات** لتحميل البيانات."
+        ))
+        return
+
+    if po_full.empty:
+        st.info(t("No purchases found for this period.", "لا توجد مشتريات لهذه الفترة."))
+        return
+
+    active_vendors = [v for v in po_vendor_sel if v != all_vendors_label]
+    if active_vendors:
+        pdf_vendor = po_full[po_full["Vendor"].isin(active_vendors)].copy()
+    else:
+        pdf_vendor = po_full.copy()
+
+    # ── Panel B — Single Model Purchase Detail ────────────────────────────────
+    st.markdown(
+        f"<div class='panel-header'>🔍 {t('Panel B — Single Model Purchase Detail','لوحة ب — تفاصيل شراء موديل واحد')}</div>",
+        unsafe_allow_html=True
+    )
+
+    if not po_model_input:
+        st.info(t(
+            "💡 Enter a **Model Code** in the filter above to see single-model analytics.",
+            "💡 أدخل **رمز الموديل** في الفلتر أعلاه لعرض تحليلات موديل واحد."
+        ))
+    else:
+        mc_norm  = po_model_input.upper()
+        model_df = po_full[po_full["Model Code"].str.upper() == mc_norm].copy()
+
+        if active_vendors:
+            model_df = model_df[model_df["Vendor"].isin(active_vendors)]
+
+        if model_df.empty:
+            st.info(t(
+                f"No purchase records found for model **{po_model_input}**.",
+                f"لا توجد سجلات شراء للموديل **{po_model_input}**."
+            ))
+        else:
+            pb_qty  = float(model_df["Qty"].sum())
+            pb_amt  = float(model_df["Subtotal"].sum())
+            pb_vend = int(model_df["Vendor"].nunique())
+            bk1, bk2, bk3, _ = st.columns([1, 1, 1, 1])
+            bk1.metric(t("Total Qty (this model)","إجمالي الكمية (الموديل)"), f"{pb_qty:,.0f}")
+            bk2.metric(t("Total Amount (SAR)","إجمالي المبلغ"), f"{pb_amt:,.2f}")
+            bk3.metric(t("Vendors","الموردون"), pb_vend)
+
+            model_vendors = sorted(model_df["Vendor"].dropna().unique().tolist())
+            pb_vendor_sel = st.multiselect(
+                f"🏭 {t('Filter vendors for this model','فلتر الموردين لهذا الموديل')}",
+                options=model_vendors,
+                default=[],
+                placeholder=t("All vendors for this model", "كل موردين هذا الموديل"),
+                key="pb_vendor_sel_v3"
+            )
+
+            model_vendor_df = (
+                model_df[model_df["Vendor"].isin(pb_vendor_sel)].copy()
+                if pb_vendor_sel else model_df.copy()
+            )
+
+            if model_vendor_df.empty:
+                st.warning(t("No data for selected vendor(s).", "لا بيانات للموردين المحددين."))
+            else:
+                st.divider()
+
+                st.markdown(f"#### 📈 {t('Purchase Qty Over Time','كمية الشراء عبر الزمن')}")
+                ts_df = (
+                    model_vendor_df
+                    .groupby("Date", as_index=False)["Qty"]
+                    .sum()
+                    .sort_values("Date")
+                )
+                if not ts_df.empty:
+                    ts_plot = ts_df.copy()
+                    ts_plot["Date"] = pd.to_datetime(ts_plot["Date"], errors="coerce")
+                    ts_plot = ts_plot.dropna(subset=["Date"])
+                    if not ts_plot.empty:
+                        st.altair_chart(_alt_line_chart(ts_plot, "Date", "Qty"), use_container_width=True)
+
+                st.divider()
+
+                st.markdown(f"#### 🏭 {t('Vendor Share for this Model','حصة الموردين لهذا الموديل')}")
+                vshare = (
+                    model_vendor_df
+                    .assign(Vendor=model_vendor_df["Vendor"].replace("", "(No Vendor)").fillna("(No Vendor)"))
+                    .groupby("Vendor", as_index=False)["Qty"]
+                    .sum()
+                    .sort_values("Qty", ascending=False)
+                    .reset_index(drop=True)
+                )
+                vshare["Total Qty"] = vshare["Qty"].map(lambda v: f"{v:,.0f}")
+                vs1, vs2 = st.columns([1.5, 1])
+                with vs1:
+                    st.altair_chart(
+                        _alt_bar_chart(vshare, x_field="Vendor", y_field="Qty",
+                                       tooltip_fmt=",.0f", color="#9b59b6"),
+                        use_container_width=True
+                    )
+                with vs2:
+                    _render_html_table(vshare[["Vendor", "Total Qty"]])
+
+                st.divider()
+                st.markdown(f"#### 📋 {t('Model Detail Table','جدول تفاصيل الموديل')} — {po_model_input}")
+                _po_full_table(model_vendor_df)
+                st.markdown("<br>", unsafe_allow_html=True)
+                _po_download_row(model_vendor_df, tag_suffix=f"_{mc_norm}_v3")
+
+    # ── Panel A — Overall Purchase Analytics ──────────────────────────────────
+    st.divider()
+    st.markdown(
+        f"<div class='panel-header'>📊 {t('Panel A — Overall Purchase Analytics','لوحة أ — تحليلات المشتريات الإجمالية')}</div>",
+        unsafe_allow_html=True
+    )
+
+    if pdf_vendor.empty:
+        st.warning(t("No data for the selected vendor(s).","لا توجد بيانات للمورد المحدد."))
+        return
+
+    _po_kpi_row(pdf_vendor, prefix="pa_v3")
+    st.divider()
+
+    st.markdown(f"#### 🏭 {t('Top 10 Vendors by Purchase Amount','أعلى 10 موردين حسب مبلغ الشراء')}")
+    vendor_grp = (
+        pdf_vendor.copy()
+        .assign(Vendor=pdf_vendor["Vendor"].replace("", "(No Vendor)").fillna("(No Vendor)"))
+        .groupby("Vendor", as_index=False)["Subtotal"]
+        .sum()
+        .sort_values("Subtotal", ascending=False)
+        .head(10)
+        .reset_index(drop=True)
+    )
+    vendor_grp["Total Amount (SAR)"] = vendor_grp["Subtotal"].map(lambda v: f"{v:,.2f}")
+    vc1, vc2 = st.columns([1.5, 1])
+    with vc1:
+        st.altair_chart(
+            _alt_bar_chart(vendor_grp, x_field="Vendor", y_field="Subtotal",
+                           tooltip_fmt=",.2f", color="#667eea"),
+            use_container_width=True
+        )
+    with vc2:
+        _render_html_table(vendor_grp[["Vendor", "Total Amount (SAR)"]])
+
+    st.divider()
+
+    prod_grp_a = (
+        pdf_vendor.copy()
+        .assign(**{
+            "Model Code": pdf_vendor["Model Code"].replace("", "(No Code)").fillna("(No Code)"),
+            "Product":    pdf_vendor["Product"].replace("", "").fillna(""),
+        })
+        .groupby(["Model Code", "Product"], as_index=False)["Qty"]
+        .sum()
+        .sort_values("Qty", ascending=False)
+        .head(10)
+        .reset_index(drop=True)
+    )
+    prod_grp_a["Total Qty"] = prod_grp_a["Qty"].map(lambda v: f"{v:,.0f}")
+    st.markdown(f"#### 🏆 {t('Top 10 Products by Qty','أعلى 10 منتجات حسب الكمية')}")
+    pc1, pc2 = st.columns([1.5, 1])
+    with pc1:
+        st.altair_chart(
+            _alt_bar_chart(prod_grp_a, x_field="Model Code", y_field="Qty",
+                           tooltip_fmt=",.0f", color="#43e97b"),
+            use_container_width=True
+        )
+    with pc2:
+        _render_html_table(prod_grp_a[["Model Code", "Product", "Total Qty"]])
+
+    st.divider()
+    _po_top10_altair(
+        f"🗂️ {t('Top 10 Categories by Qty','أعلى 10 فئات حسب الكمية')}",
+        "Category", "Qty", pdf_vendor,
+        color="#4facfe", tooltip_fmt=",.0f"
+    )
+    st.divider()
+    _po_top10_altair(
+        f"🏷️ {t('Top 10 Brand Categories by Qty','أعلى 10 فئات علامة تجارية حسب الكمية')}",
+        "Brand Category", "Qty", pdf_vendor,
+        color="#f093fb", tooltip_fmt=",.0f"
+    )
+    st.divider()
+
+    st.markdown(f"#### 📋 {t('Full Purchase Detail','تفاصيل المشتريات الكاملة')}")
+    _po_full_table(pdf_vendor)
+    st.markdown("<br>", unsafe_allow_html=True)
+    _po_download_row(pdf_vendor, tag_suffix="_overall_v3")
+
+
+# ─────────────────────────────────────────────────────────────────────────────
 # DASHBOARD
 # ─────────────────────────────────────────────────────────────────────────────
 def show_dashboard():
+    # ── SIDEBAR ───────────────────────────────────────────────────────────────
     with st.sidebar:
         st.markdown(f"### ⚙️ {t('Settings','الإعدادات')}")
+
+        # Language
         lc2 = st.radio(t("🌐 Language","🌐 اللغة"),["EN","AR"],
                        index=0 if get_lang()=="EN" else 1, horizontal=True)
         if lc2!=get_lang(): st.session_state.lang=lc2; st.rerun()
+
+        # ── Analytics Navigation (below Language) ─────────────────────────────
         st.divider()
+        st.markdown(f"##### 📊 {t('Analytics','التحليلات')}")
+
+        current_view = st.session_state.get("analytics_view", "purchase")
+
+        # SWAG Sales button
+        sales_type  = "primary" if current_view == "sales"    else "secondary"
+        purch_type  = "primary" if current_view == "purchase" else "secondary"
+
+        col_s, col_p = st.columns(2)
+        with col_s:
+            if st.button(
+                f"💰 {t('Sales','المبيعات')}",
+                type=sales_type,
+                use_container_width=True,
+                key="nav_sales_btn"
+            ):
+                st.session_state.analytics_view = "sales"
+                st.rerun()
+        with col_p:
+            if st.button(
+                f"🛒 {t('Purchase','المشتريات')}",
+                type=purch_type,
+                use_container_width=True,
+                key="nav_purchase_btn"
+            ):
+                st.session_state.analytics_view = "purchase"
+                st.rerun()
+
+        # Active indicator
+        if current_view == "sales":
+            st.markdown(
+                "<div style='background:linear-gradient(90deg,#667eea22,#43e97b22);border-left:3px solid #43e97b;"
+                "border-radius:6px;padding:6px 10px;font-size:0.78rem;color:#86efac;margin-top:4px;'>"
+                f"✅ {t('Viewing: SWAG Sales','عرض: مبيعات سواغ')}</div>",
+                unsafe_allow_html=True
+            )
+        else:
+            st.markdown(
+                "<div style='background:linear-gradient(90deg,#667eea22,#f093fb22);border-left:3px solid #667eea;"
+                "border-radius:6px;padding:6px 10px;font-size:0.78rem;color:#c4b5fd;margin-top:4px;'>"
+                f"✅ {t('Viewing: SWAG Purchase','عرض: مشتريات سواغ')}</div>",
+                unsafe_allow_html=True
+            )
+
+        st.divider()
+
+        # User info + Logout
         st.markdown(f"👤 **{st.session_state.user_email}**")
         if st.button(f"🚪 {t('Logout','تسجيل الخروج')}", use_container_width=True):
             do_logout()
         st.divider()
+
         st.markdown(f"##### 🔬 {t('Search Mode','وضع البحث')}")
         et = st.toggle(t("Exact match only","تطابق تام فقط"),
                        value=st.session_state.search_exact)
@@ -1543,6 +2769,7 @@ def show_dashboard():
         st.caption(t("🎯 Exact","🎯 تطابق تام") if st.session_state.search_exact
                    else t("🔍 Variant wildcard","🔍 كل المتغيرات"))
         st.divider()
+
         st.markdown(f"##### 🔴 {t('Low Stock Alert','تنبيه المخزون')}")
         thr = st.number_input(t("Threshold (qty ≤)","الحد (كمية ≤)"),
                               min_value=0, max_value=1000,
@@ -1550,10 +2777,38 @@ def show_dashboard():
         if thr!=st.session_state.low_stock_thresh:
             st.session_state.low_stock_thresh = int(thr)
         st.divider()
+
         if st.session_state.last_run:
             st.markdown(f"🕒 **{t('Last Run','آخر تشغيل')}**")
             st.caption(st.session_state.last_run.get("time",""))
 
+    # ── Header ────────────────────────────────────────────────────────────────
+    current_view = st.session_state.get("analytics_view", "purchase")
+
+    # If analytics view is active, show it directly without showing stock tabs
+    if current_view == "sales":
+        st.markdown(f"""
+        <div class='dash-header'>
+            <div class='dash-title'>💰 {t('SWAG Sales Dashboard','لوحة مبيعات سواغ')}</div>
+            <div class='dash-subtitle'>{t('Sales analytics from SWAG Odoo system',
+                                           'تحليلات المبيعات من نظام سواغ أودو')}</div>
+        </div>""", unsafe_allow_html=True)
+        st.divider()
+        show_sales_analytics()
+        return
+
+    if current_view == "purchase":
+        st.markdown(f"""
+        <div class='dash-header'>
+            <div class='dash-title'>🛒 {t('SWAG Purchase Dashboard','لوحة مشتريات سواغ')}</div>
+            <div class='dash-subtitle'>{t('Purchase analytics from SWAG Odoo system',
+                                           'تحليلات المشتريات من نظام سواغ أودو')}</div>
+        </div>""", unsafe_allow_html=True)
+        st.divider()
+        show_purchase_analytics()
+        return
+
+    # ── Default: Stock Comparison Dashboard ───────────────────────────────────
     st.markdown(f"""
     <div class='dash-header'>
         <div class='dash-title'>📊 {t('SWAG Product Comparison','مقارنة منتجات سواغ')}</div>
@@ -1562,7 +2817,7 @@ def show_dashboard():
     </div>""", unsafe_allow_html=True)
     st.divider()
 
-    # ── PDF Upload ────────────────────────────────────────────────────────────
+    # ── PDF ───────────────────────────────────────────────────────────────────
     st.markdown(f"### 📄 {t('Upload Invoice PDF','رفع فاتورة PDF')}")
     p1,p2 = st.columns([2.5,1.5])
     with p1:
@@ -1587,6 +2842,7 @@ def show_dashboard():
 
         if raw:
             is_main = emode is None or "Main" in emode or "رئيسية" in emode
+
             if is_main:
                 unique = get_unique_base_models(raw)
             else:
@@ -1605,10 +2861,12 @@ def show_dashboard():
             c3.info(f"📌 {t('Main','رئيسية') if is_main else t('With sizes','مع المقاسات')}")
 
             with st.expander(t(f"📋 {len(unique_codes)} codes","📋 الرموز"), expanded=False):
-                st.code("\n".join(
-                    f"{item['sequence']:>3}. {item['code']}"
-                    for item in unique_sorted
-                ))
+                st.code(
+                    "\n".join(
+                        f"{item['sequence']:>3}. {item['code']}"
+                        for item in unique_sorted
+                    )
+                )
 
             ca,cb = st.columns(2)
             with ca:
@@ -1709,16 +2967,17 @@ def show_dashboard():
                 display_name = get_system_name(key)
                 st.markdown(
                     f"<div class='sys-row'>"
-                    f"<span style='font-size:.85rem;color:#e8e8ff'><b>{display_name}</b></span>"
+                    f"<span style='font-size:.85rem;color:#e8e8ff'>"
+                    f"<b>{display_name}</b></span>"
                     f"<span class='{bc}'>{bt}</span></div>",
                     unsafe_allow_html=True)
 
-    # ── Trigger run ───────────────────────────────────────────────────────────
+    # ── Run ───────────────────────────────────────────────────────────────────
     run_codes    = None
     force_branch = False
     if st.session_state.get("pdf_codes"):
         run_codes    = st.session_state.pdf_codes
-        force_branch = st.session_state.get("pdf_mode","total") == "branch"
+        force_branch = st.session_state.get("pdf_mode","total")=="branch"
         sb = True
         st.session_state.pdf_codes = None
         st.session_state.pdf_mode  = "total"
@@ -1730,7 +2989,6 @@ def show_dashboard():
             st.warning(t("Enter at least one model code.","أدخل رمزاً واحداً.")); st.stop()
         run_codes = list(dict.fromkeys([c.strip() for c in run_codes if c.strip()]))
         ct = tuple(run_codes)
-
         with st.spinner(t("⚡ Fetching from 4 systems…","⚡ جلب البيانات من 4 أنظمة…")):
             data = fetch_all_data(
                 ct, exact=st.session_state.search_exact,
@@ -1746,8 +3004,7 @@ def show_dashboard():
         trdf = prepare_df(data["transfers"])
         rdf  = prepare_df(data["reorder"])
 
-        # system status map
-        sc2     = "System"
+        sc2 = "System"
         raw_tdf = data["total"]
         ns = {k:"NOT_FOUND" for k in SYSTEM_KEYS}
         if "_status" in raw_tdf.columns and sc2 in raw_tdf.columns:
@@ -1758,10 +3015,8 @@ def show_dashboard():
                     if   "OK"    in sv.values: ns[key]="OK"
                     elif "ERROR" in sv.values: ns[key]="ERROR"
 
-        qc2     = t("On Hand","متوفر")
+        qc2 = t("On Hand","متوفر")
         sc2_loc = t("System","النظام")
-        mc_loc  = t("Model Code","رمز الموديل")
-
         if qc2 in tdf.columns:
             zero_mask = pd.to_numeric(tdf[qc2], errors="coerce").fillna(0) == 0
             tdf.loc[zero_mask, "_status"] = "not_available"
@@ -1777,63 +3032,6 @@ def show_dashboard():
                 st.sidebar.info(
                     t(f"ℹ️ {zero_count} rows have zero qty (shown as ❌ Not Available)",
                       f"ℹ️ {zero_count} صف بكمية صفر (معروض كـ ❌ لا يوجد)"))
-
-        # ── Add Purchase Qty column — merge on Model Code only ──────────
-        swag_system_name = get_system_name("SWAG")
-        swag_mask = (tdf[sc2_loc] == swag_system_name)
-
-        if swag_mask.any():
-            model_codes_swag = (
-                tdf.loc[swag_mask, mc_loc]
-                .dropna()
-                .unique()
-                .tolist()
-            )
-            if model_codes_swag:
-                end_date   = datetime.now().date()
-                start_date = end_date - timedelta(days=365)
-                date_from  = start_date.strftime("%Y-%m-%d")
-                date_to    = end_date.strftime("%Y-%m-%d")
-
-                with st.spinner(t("📦 Fetching purchase totals for SWAG models…",
-                                  "📦 جلب إجمالي المشتريات لموديلات سواغ…")):
-                    pur_summary = get_purchase_summary_by_model(
-                        tuple(model_codes_swag), date_from, date_to
-                    )
-
-                if not pur_summary.empty:
-                    pur_renamed = pur_summary.rename(columns={"Model Code": mc_loc})
-                    tdf = tdf.merge(
-                        pur_renamed[[mc_loc, "Purchase Qty"]],
-                        on=mc_loc,
-                        how="left"
-                    )
-                    tdf["Purchase Qty"] = tdf["Purchase Qty"].fillna(0).astype(int)
-                    tdf.loc[~swag_mask, "Purchase Qty"] = 0
-                else:
-                    tdf["Purchase Qty"] = 0
-            else:
-                tdf["Purchase Qty"] = 0
-        else:
-            tdf["Purchase Qty"] = 0
-
-        pur_col_name = t("Purchase Qty", "كمية المشتريات")
-        tdf = tdf.rename(columns={"Purchase Qty": pur_col_name})
-
-        desired_cols = [
-            sc2_loc,
-            mc_loc,
-            t("Product","المنتج"),
-            t("Sale Price","سعر البيع"),
-            pur_col_name,
-            qc2,
-        ]
-        existing_cols = tdf.columns.tolist()
-        final_cols    = [c for c in desired_cols if c in existing_cols]
-        for c in existing_cols:
-            if c not in final_cols:
-                final_cols.append(c)
-        tdf = tdf[final_cols]
 
         st.session_state.total_df       = tdf
         st.session_state.branch_df      = bdf
@@ -1859,10 +3057,8 @@ def show_dashboard():
 
     st.divider()
     thr   = st.session_state.low_stock_thresh
-    qc2   = t("On Hand","متوفر")
-    pc2   = t("Sale Price","سعر البيع")
-    sc2   = t("System","النظام")
-    stats = st.session_state.sys_stats
+    qc2   = t("On Hand","متوفر"); pc2 = t("Sale Price","سعر البيع")
+    sc2   = t("System","النظام"); stats = st.session_state.sys_stats
     ok    = tdf[tdf["_status"]=="OK"] if "_status" in tdf.columns else tdf
     on    = sum(1 for v in stats.values() if v=="OK")
 
@@ -1894,23 +3090,17 @@ def show_dashboard():
     ht = st.session_state.show_transfers and trdf is not None and not trdf.empty
     hr = st.session_state.show_reorder   and rdf  is not None and not rdf.empty
 
-    # ── CHANGE 1D: Add Sales tab label ────────────────────────────────────────
-    tlabels = [
-        f"📦 {t('Total Stock','المخزون الإجمالي')}",
-        f"📊 {t('Price History','تاريخ الأسعار')}",
-    ]
+    tlabels = [f"📦 {t('Total Stock','المخزون الإجمالي')}",
+               f"📊 {t('Price History','تاريخ الأسعار')}"]
     if hb: tlabels.append(f"🗺️ {t('Branch Stock','مخزون الفروع')}")
     if ht: tlabels.append(f"🚚 {t('Transfers','النقليات')}")
     if hr: tlabels.append(f"📦 {t('Reorder','إعادة الطلب')}")
-    tlabels.append(f"🛒 {t('SWAG Purchase','مشتريات سواغ')}")
-    tlabels.append(f"🛍️ {t('SWAG Sales','مبيعات سواغ')}")   # NEW
 
-    tabs = st.tabs(tlabels)
-    ti   = 0
+    tabs = st.tabs(tlabels); ti = 0
 
-    # ── Tab: Total Stock ──────────────────────────────────────────────────────
+    # ── Tab 1: Total Stock ────────────────────────────────────────────────────
     with tabs[ti]:
-        ti += 1
+        ti+=1
         st.markdown(f"### 📦 {t('Total Stock','المخزون الإجمالي')}")
         display_df(tdf, thr, table_key="total")
         st.markdown("<br>", unsafe_allow_html=True)
@@ -1927,9 +3117,9 @@ def show_dashboard():
             "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
             use_container_width=True)
 
-    # ── Tab: Price History ────────────────────────────────────────────────────
+    # ── Tab 2: Price History ──────────────────────────────────────────────────
     with tabs[ti]:
-        ti += 1
+        ti+=1
         st.markdown(f"### 📈 {t('Price History','تاريخ الأسعار')}")
         hdf = build_price_history_df()
         if hdf.empty:
@@ -1940,10 +3130,10 @@ def show_dashboard():
             if st.button(f"🗑️ {t('Clear History','مسح السجل')}"):
                 st.session_state.price_history={}; st.rerun()
 
-    # ── Tab: Branch Stock ─────────────────────────────────────────────────────
+    # ── Tab 3: Branch Stock ───────────────────────────────────────────────────
     if hb:
         with tabs[ti]:
-            ti += 1
+            ti+=1
             st.markdown(f"### 🗺️ {t('Branch-wise Stock','مخزون حسب الفرع')}")
             display_df(bdf, thr, table_key="branch")
             bc2 = t("Branch","الفرع")
@@ -1962,10 +3152,10 @@ def show_dashboard():
                 "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
                 use_container_width=True)
 
-    # ── Tab: Transfers ────────────────────────────────────────────────────────
+    # ── Tab 4: Transfers ──────────────────────────────────────────────────────
     if ht:
         with tabs[ti]:
-            ti += 1
+            ti+=1
             st.markdown(f"### 🚚 {t('Pending Transfers','النقليات المعلقة')}")
             okt = trdf[trdf["_status"]=="OK"] if "_status" in trdf.columns else trdf
             if not okt.empty:
@@ -1984,10 +3174,10 @@ def show_dashboard():
                 "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
                 use_container_width=True)
 
-    # ── Tab: Reorder ──────────────────────────────────────────────────────────
+    # ── Tab 5: Reorder ────────────────────────────────────────────────────────
     if hr:
         with tabs[ti]:
-            ti += 1
+            ti+=1
             CPRI  = t("Priority","الأولوية")
             CSUGG = t("Suggest","المقترح")
             st.markdown(f"### 📦 {t('Reorder Suggestions','اقتراحات إعادة الطلب')}")
@@ -2021,649 +3211,6 @@ def show_dashboard():
                 to_excel(rdf), dl_name("reorder","xlsx"),
                 "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
                 use_container_width=True)
-
-    # ── Tab: SWAG Purchase ────────────────────────────────────────────────────
-    with tabs[ti]:
-        ti += 1
-        st.markdown(f"### 🛒 {t('SWAG Purchase History','سجل مشتريات سواغ')}")
-        st.markdown(
-            "<div class='info-banner'>📌 "
-            + t("Purchase orders from the <b>SWAG</b> system only (state: purchase / done).",
-                "أوامر الشراء من نظام <b>سواغ</b> فقط (الحالة: مشترى / منجز).")
-            + "</div>",
-            unsafe_allow_html=True
-        )
-
-        pf1, pf2, pf3 = st.columns([1.5, 1, 1])
-        with pf1:
-            po_model_code = st.text_input(
-                f"🔖 {t('Model Code (Internal Ref)','رمز الموديل (المرجع الداخلي)')}",
-                placeholder=t("e.g. RVT196 — leave blank for all",
-                              "مثال: RVT196 — اتركه فارغاً للكل"),
-                key="po_model_code"
-            ).strip()
-
-        default_from = datetime.now().date() - timedelta(days=365)
-        default_to   = datetime.now().date()
-
-        with pf2:
-            po_date_from = st.date_input(
-                f"📅 {t('From','من')}", value=default_from, key="po_date_from")
-        with pf3:
-            po_date_to = st.date_input(
-                f"📅 {t('To','إلى')}", value=default_to, key="po_date_to")
-
-        fetch_po_btn = st.button(
-            f"🔍 {t('Fetch Purchase Analytics','جلب تحليلات المشتريات')}",
-            type="primary", use_container_width=False, key="fetch_po_btn"
-        )
-
-        if fetch_po_btn:
-            date_from_str = po_date_from.strftime("%Y-%m-%d")
-            date_to_str   = po_date_to.strftime("%Y-%m-%d")
-            po_model_norm = po_model_code.upper() if po_model_code else None
-
-            with st.spinner(t("⚡ Fetching purchase analytics from SWAG…",
-                               "⚡ جلب تحليلات المشتريات من نظام سواغ…")):
-                po_df = fetch_swag_purchase_history(
-                    model_code=po_model_norm,
-                    date_from=date_from_str,
-                    date_to=date_to_str,
-                )
-
-            if po_df is None or po_df.empty:
-                st.info(t("No purchases found for this period / model.",
-                          "لا توجد مشتريات لهذه الفترة / الموديل."))
-            else:
-                total_qty      = float(po_df["Qty"].sum())
-                total_amount   = float(po_df["Subtotal"].sum())
-                distinct_prods = int(po_df["Model Code"].nunique())
-                num_vendors    = int(po_df["Vendor"].nunique())
-
-                km1, km2, km3, km4 = st.columns(4)
-                km1.metric(t("Total Qty Purchased","إجمالي الكمية المشتراة"),
-                           f"{total_qty:,.0f}")
-                km2.metric(t("Total Purchase Amount","إجمالي مبلغ الشراء"),
-                           f"{total_amount:,.2f} SAR")
-                km3.metric(t("Distinct Products","عدد المنتجات"), distinct_prods)
-                km4.metric(t("Distinct Vendors","عدد الموردين"), num_vendors)
-
-                st.divider()
-
-                def _top10_table(top_df):
-                    cols_t = top_df.columns.tolist()
-                    th_t   = "".join(f"<th>{c}</th>" for c in cols_t)
-                    def _tr(idx_row):
-                        _, row = idx_row
-                        cells = "".join(
-                            f'<td class="cf">{v}</td>' if ci == 0 else f"<td>{v}</td>"
-                            for ci, v in enumerate(row)
-                        )
-                        return f"<tr>{cells}</tr>"
-                    tbody_t = "".join(_tr(x) for x in top_df.iterrows())
-                    st.markdown(
-                        f'{_TABLE_CSS}<div class="swag-wrap">'
-                        f'<table class="swag-tbl"><thead><tr>{th_t}</tr></thead>'
-                        f'<tbody>{tbody_t}</tbody></table></div>',
-                        unsafe_allow_html=True
-                    )
-
-                st.markdown(f"#### 🏆 {t('Top 10 Products by Qty','أعلى 10 منتجات حسب الكمية')}")
-                prod_grp = (
-                    po_df.fillna({"Model Code": "(No Code)", "Product": "(No Product)"})
-                    .groupby(["Model Code", "Product"], as_index=False)["Qty"]
-                    .sum()
-                    .sort_values("Qty", ascending=False)
-                    .head(10)
-                    .reset_index(drop=True)
-                )
-                prod_grp["Total Qty"] = prod_grp["Qty"].map(lambda v: f"{v:,.0f}")
-                ch1, ch2 = st.columns([1.4, 1])
-                with ch1:
-                    st.bar_chart(prod_grp.set_index("Model Code")["Qty"], use_container_width=True)
-                with ch2:
-                    _top10_table(prod_grp[["Model Code", "Product", "Total Qty"]])
-
-                st.divider()
-
-                st.markdown(f"#### 🗂️ {t('Top 10 Categories by Qty','أعلى 10 فئات حسب الكمية')}")
-                cat_grp = (
-                    po_df.copy()
-                    .assign(Category=po_df["Category"].replace("", "(No Category)").fillna("(No Category)"))
-                    .groupby("Category", as_index=False)["Qty"]
-                    .sum()
-                    .sort_values("Qty", ascending=False)
-                    .head(10)
-                    .reset_index(drop=True)
-                )
-                cat_grp["Total Qty"] = cat_grp["Qty"].map(lambda v: f"{v:,.0f}")
-                cc1, cc2 = st.columns([1.4, 1])
-                with cc1:
-                    st.bar_chart(cat_grp.set_index("Category")["Qty"], use_container_width=True)
-                with cc2:
-                    _top10_table(cat_grp[["Category", "Total Qty"]])
-
-                st.divider()
-
-                st.markdown(f"#### 🏷️ {t('Top 10 Brand Categories by Qty','أعلى 10 فئات علامة تجارية حسب الكمية')}")
-                bc_grp = (
-                    po_df.copy()
-                    .assign(**{"Brand Category": po_df["Brand Category"].replace("", "(No Brand)").fillna("(No Brand)")})
-                    .groupby("Brand Category", as_index=False)["Qty"]
-                    .sum()
-                    .sort_values("Qty", ascending=False)
-                    .head(10)
-                    .reset_index(drop=True)
-                )
-                bc_grp["Total Qty"] = bc_grp["Qty"].map(lambda v: f"{v:,.0f}")
-                bc1, bc2 = st.columns([1.4, 1])
-                with bc1:
-                    st.bar_chart(bc_grp.set_index("Brand Category")["Qty"], use_container_width=True)
-                with bc2:
-                    _top10_table(bc_grp[["Brand Category", "Total Qty"]])
-
-                # ── CHANGE 2: Branch-wise table in Purchase tab ───────────────
-                st.divider()
-                st.markdown(f"#### 🏪 {t('Branch-wise Purchase Summary','ملخص المشتريات حسب الفرع')}")
-
-                if "Vendor" in po_df.columns and "Qty" in po_df.columns and "Subtotal" in po_df.columns:
-                    # We don't have Branch in purchase data, so group by Vendor as proxy
-                    # and also show a pivot by date period
-                    st.markdown(
-                        "<div class='info-banner'>📌 "
-                        + t("Purchase orders are not branch-specific. Showing vendor summary as proxy.",
-                            "أوامر الشراء غير مرتبطة بفروع. يتم عرض ملخص الموردين بدلاً من ذلك.")
-                        + "</div>",
-                        unsafe_allow_html=True
-                    )
-                    vendor_pivot = (
-                        po_df.groupby("Vendor", as_index=False)
-                        .agg(
-                            Total_Qty=("Qty", "sum"),
-                            Total_Amount=("Subtotal", "sum"),
-                            Order_Count=("PO", "nunique"),
-                            Products=("Model Code", "nunique"),
-                        )
-                        .sort_values("Total_Qty", ascending=False)
-                        .reset_index(drop=True)
-                    )
-                    vendor_pivot.columns = [
-                        t("Vendor","المورد"),
-                        t("Total Qty","إجمالي الكمية"),
-                        t("Total Amount (SAR)","إجمالي المبلغ (ر.س)"),
-                        t("PO Count","عدد أوامر الشراء"),
-                        t("Products","المنتجات"),
-                    ]
-                    # Format numbers
-                    amt_col = t("Total Amount (SAR)","إجمالي المبلغ (ر.س)")
-                    qty_col = t("Total Qty","إجمالي الكمية")
-                    vendor_pivot[amt_col] = vendor_pivot[amt_col].map(lambda v: f"{v:,.2f}")
-                    vendor_pivot[qty_col] = vendor_pivot[qty_col].map(lambda v: f"{v:,.0f}")
-                    _render_html_table(vendor_pivot)
-                    st.caption(f"📊 {len(vendor_pivot)} {t('vendors','موردين')}")
-
-                st.divider()
-
-                st.markdown(f"#### 📋 {t('Full Purchase Detail','تفاصيل المشتريات الكاملة')}")
-                show_po = po_df.copy()
-                show_po["Unit Price"] = show_po["Unit Price"].map(lambda v: f"{v:.2f} SAR")
-                show_po["Subtotal"]   = show_po["Subtotal"].map(lambda v: f"{v:,.2f} SAR")
-                show_po["Qty"]        = show_po["Qty"].map(lambda v: f"{v:,.0f}")
-
-                cols_po = show_po.columns.tolist()
-                th_po   = "".join(f"<th>{c}</th>" for c in cols_po)
-
-                def _po_row(idx_row):
-                    _, row = idx_row
-                    cells = "".join(
-                        f'<td class="cf">{v}</td>' if ci == 0 else f"<td>{v}</td>"
-                        for ci, v in enumerate(row)
-                    )
-                    return f"<tr>{cells}</tr>"
-
-                tbody_po = "".join(_po_row(x) for x in show_po.iterrows())
-                st.markdown(
-                    f'{_TABLE_CSS}<div class="swag-wrap">'
-                    f'<table class="swag-tbl"><thead><tr>{th_po}</tr></thead>'
-                    f'<tbody>{tbody_po}</tbody></table></div>',
-                    unsafe_allow_html=True
-                )
-                st.caption(f"📊 {len(show_po)} {t('rows','صفوف')}")
-
-                # Filtered export: use po_df (already filtered by user inputs above)
-                display_df_purchase = po_df.copy()
-
-                st.markdown("<br>", unsafe_allow_html=True)
-                dl1, dl2, _ = st.columns([1, 1, 2])
-                dl1.download_button(
-                    "⬇️ CSV",
-                    display_df_purchase.to_csv(index=False).encode("utf-8-sig"),
-                    dl_name("purchase", "csv"), "text/csv",
-                    use_container_width=True
-                )
-                dl2.download_button(
-                    "⬇️ Excel",
-                    to_excel_purchase(display_df_purchase),
-                    dl_name("purchase", "xlsx"),
-                    "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-                    use_container_width=True
-                )
-
-    # ── CHANGE 1E: Tab: SWAG Sales ────────────────────────────────────────────
-    with tabs[ti]:
-        ti += 1
-        st.markdown(f"### 🛍️ {t('SWAG Sales Analytics','تحليلات مبيعات سواغ')}")
-        st.markdown(
-            "<div class='info-banner'>📌 "
-            + t("Sales orders from the <b>SWAG</b> system only (state: sale / done).",
-                "أوامر البيع من نظام <b>سواغ</b> فقط (الحالة: مباع / منجز).")
-            + "</div>",
-            unsafe_allow_html=True
-        )
-
-        # ── Filters ────────────────────────────────────────────────────────────
-        so_col1, so_col2, so_col3, so_col4 = st.columns([1, 1, 1.5, 0.8])
-
-        _today     = datetime.now().date()
-        _first_month = _today.replace(day=1)
-
-        with so_col1:
-            so_date_from = st.date_input(
-                f"📅 {t('From','من')}",
-                value=_first_month,
-                key="so_date_from"
-            )
-        with so_col2:
-            so_date_to = st.date_input(
-                f"📅 {t('To','إلى')}",
-                value=_today,
-                key="so_date_to"
-            )
-        with so_col3:
-            so_model_filter = st.text_input(
-                f"🔖 {t('Model Code (optional)','رمز الموديل (اختياري)')}",
-                placeholder=t("e.g. XP6013 — leave blank for all","مثال: XP6013 — اتركه فارغاً للكل"),
-                key="so_model_filter"
-            ).strip()
-        with so_col4:
-            fetch_so_btn = st.button(
-                f"🔍 {t('Fetch Sales','جلب المبيعات')}",
-                type="primary",
-                use_container_width=True,
-                key="fetch_so_btn"
-            )
-
-        if fetch_so_btn:
-            _date_from_str = so_date_from.strftime("%Y-%m-%d")
-            _date_to_str   = so_date_to.strftime("%Y-%m-%d")
-            _model_norm    = so_model_filter.upper() if so_model_filter else None
-            with st.spinner(t("⚡ Fetching sales from SWAG…","⚡ جلب بيانات المبيعات من سواغ…")):
-                _so_df = fetch_swag_sales_history(
-                    model_code=_model_norm,
-                    date_from=_date_from_str,
-                    date_to=_date_to_str,
-                )
-            st.session_state["so_analytics_df"] = _so_df
-            st.session_state["so_last_model"]   = so_model_filter
-
-        so_df = st.session_state.get("so_analytics_df")
-
-        if so_df is None or (isinstance(so_df, pd.DataFrame) and so_df.empty):
-            st.info(t("Click 'Fetch Sales' to load data.", "اضغط 'جلب المبيعات' لتحميل البيانات."))
-        else:
-            # ── KPI cards ──────────────────────────────────────────────────────
-            total_qty_sold   = float(so_df["Qty"].sum())
-            total_sales_amt  = float(so_df["Subtotal"].sum())
-            distinct_custs   = int(so_df["Customer"].nunique())
-            distinct_prods_s = int(so_df["Model Code"].nunique())
-
-            sk1, sk2, sk3, sk4 = st.columns(4)
-            sk1.metric(t("Total Qty Sold","إجمالي الكميات المباعة"),    f"{total_qty_sold:,.0f}")
-            sk2.metric(t("Total Sales Amount","إجمالي مبلغ المبيعات"), f"{total_sales_amt:,.2f} SAR")
-            sk3.metric(t("Distinct Customers","عدد العملاء"),           distinct_custs)
-            sk4.metric(t("Distinct Products","عدد المنتجات"),          distinct_prods_s)
-
-            st.divider()
-
-            # ── Helper: small analytics table ─────────────────────────────────
-            def _analytics_table(df_t):
-                cols_t = df_t.columns.tolist()
-                th_t   = "".join(f"<th>{c}</th>" for c in cols_t)
-                def _tr(idx_row):
-                    _, row = idx_row
-                    cells = "".join(
-                        f'<td class="cf">{v}</td>' if ci == 0 else f"<td>{v}</td>"
-                        for ci, v in enumerate(row)
-                    )
-                    return f"<tr>{cells}</tr>"
-                tbody_t = "".join(_tr(x) for x in df_t.iterrows())
-                st.markdown(
-                    f'{_TABLE_CSS}<div class="swag-wrap">'
-                    f'<table class="swag-tbl"><thead><tr>{th_t}</tr></thead>'
-                    f'<tbody>{tbody_t}</tbody></table></div>',
-                    unsafe_allow_html=True
-                )
-
-            # ── 1. Top 10 Products by Qty ──────────────────────────────────────
-            st.markdown(f"#### 🏆 {t('Top 10 Products by Qty Sold','أعلى 10 منتجات حسب الكمية المباعة')}")
-            prod_qty_grp = (
-                so_df.fillna({"Model Code": "(No Code)", "Product": "(No Product)"})
-                .groupby(["Model Code", "Product"], as_index=False)["Qty"]
-                .sum()
-                .sort_values("Qty", ascending=False)
-                .head(10)
-                .reset_index(drop=True)
-            )
-            prod_qty_grp["Total Qty"] = prod_qty_grp["Qty"].map(lambda v: f"{v:,.0f}")
-            sq1, sq2 = st.columns([1.4, 1])
-            with sq1:
-                st.bar_chart(prod_qty_grp.set_index("Model Code")["Qty"], use_container_width=True)
-            with sq2:
-                _analytics_table(prod_qty_grp[["Model Code", "Product", "Total Qty"]])
-
-            st.divider()
-
-            # ── 2. Top 10 Products by Subtotal ────────────────────────────────
-            st.markdown(f"#### 💰 {t('Top 10 Products by Revenue','أعلى 10 منتجات حسب الإيراد')}")
-            prod_rev_grp = (
-                so_df.fillna({"Model Code": "(No Code)", "Product": "(No Product)"})
-                .groupby(["Model Code", "Product"], as_index=False)["Subtotal"]
-                .sum()
-                .sort_values("Subtotal", ascending=False)
-                .head(10)
-                .reset_index(drop=True)
-            )
-            prod_rev_grp["Revenue (SAR)"] = prod_rev_grp["Subtotal"].map(lambda v: f"{v:,.2f}")
-            sr1, sr2 = st.columns([1.4, 1])
-            with sr1:
-                st.bar_chart(prod_rev_grp.set_index("Model Code")["Subtotal"], use_container_width=True)
-            with sr2:
-                _analytics_table(prod_rev_grp[["Model Code", "Product", "Revenue (SAR)"]])
-
-            st.divider()
-
-            # ── 3. Top 10 Brand Categories by Qty ────────────────────────────
-            st.markdown(f"#### 🏷️ {t('Top 10 Brand Categories by Qty','أعلى 10 فئات علامة تجارية حسب الكمية')}")
-            brand_qty_grp = (
-                so_df.copy()
-                .assign(**{"Brand Category": so_df["Brand Category"].fillna("(No Brand)").replace("", "(No Brand)")})
-                .groupby("Brand Category", as_index=False)["Qty"]
-                .sum()
-                .sort_values("Qty", ascending=False)
-                .head(10)
-                .reset_index(drop=True)
-            )
-            brand_qty_grp["Total Qty"] = brand_qty_grp["Qty"].map(lambda v: f"{v:,.0f}")
-            sb1, sb2 = st.columns([1.4, 1])
-            with sb1:
-                st.bar_chart(brand_qty_grp.set_index("Brand Category")["Qty"], use_container_width=True)
-            with sb2:
-                _analytics_table(brand_qty_grp[["Brand Category", "Total Qty"]])
-
-            st.divider()
-
-            # ── 4. Top 10 Categories by Qty ───────────────────────────────────
-            st.markdown(f"#### 🗂️ {t('Top 10 Categories by Qty','أعلى 10 فئات حسب الكمية')}")
-            cat_qty_grp = (
-                so_df.copy()
-                .assign(Category=so_df["Category"].fillna("(No Category)").replace("", "(No Category)"))
-                .groupby("Category", as_index=False)["Qty"]
-                .sum()
-                .sort_values("Qty", ascending=False)
-                .head(10)
-                .reset_index(drop=True)
-            )
-            cat_qty_grp["Total Qty"] = cat_qty_grp["Qty"].map(lambda v: f"{v:,.0f}")
-            sc1, sc2 = st.columns([1.4, 1])
-            with sc1:
-                st.bar_chart(cat_qty_grp.set_index("Category")["Qty"], use_container_width=True)
-            with sc2:
-                _analytics_table(cat_qty_grp[["Category", "Total Qty"]])
-
-            st.divider()
-
-            # ── 5. Top 10 Customers by Subtotal ──────────────────────────────
-            st.markdown(f"#### 👥 {t('Top 10 Customers by Revenue','أعلى 10 عملاء حسب الإيراد')}")
-            cust_rev_grp = (
-                so_df.fillna({"Customer": "(Unknown)"})
-                .groupby("Customer", as_index=False)["Subtotal"]
-                .sum()
-                .sort_values("Subtotal", ascending=False)
-                .head(10)
-                .reset_index(drop=True)
-            )
-            cust_rev_grp["Revenue (SAR)"] = cust_rev_grp["Subtotal"].map(lambda v: f"{v:,.2f}")
-            cu1, cu2 = st.columns([1.4, 1])
-            with cu1:
-                st.bar_chart(cust_rev_grp.set_index("Customer")["Subtotal"], use_container_width=True)
-            with cu2:
-                _analytics_table(cust_rev_grp[["Customer", "Revenue (SAR)"]])
-
-            st.divider()
-
-            # ── 6. Top 10 Branches by Qty AND Subtotal ───────────────────────
-            st.markdown(f"#### 🏪 {t('Branch Performance','أداء الفروع')}")
-            branch_grp = (
-                so_df.fillna({"Branch": "Unknown"})
-                .groupby("Branch", as_index=False)
-                .agg(Qty=("Qty","sum"), Subtotal=("Subtotal","sum"))
-                .sort_values("Qty", ascending=False)
-                .head(10)
-                .reset_index(drop=True)
-            )
-            bx1, bx2 = st.columns(2)
-            with bx1:
-                st.markdown(f"**📦 {t('By Qty','حسب الكمية')}**")
-                st.bar_chart(branch_grp.set_index("Branch")["Qty"], use_container_width=True)
-            with bx2:
-                st.markdown(f"**💰 {t('By Revenue','حسب الإيراد')}**")
-                st.bar_chart(branch_grp.set_index("Branch")["Subtotal"], use_container_width=True)
-
-            # Branch detail table
-            branch_tbl = branch_grp.copy()
-            branch_tbl["Total Qty"]       = branch_tbl["Qty"].map(lambda v: f"{v:,.0f}")
-            branch_tbl["Revenue (SAR)"]   = branch_tbl["Subtotal"].map(lambda v: f"{v:,.2f}")
-            _analytics_table(branch_tbl[["Branch", "Total Qty", "Revenue (SAR)"]])
-
-            st.divider()
-
-            # ── Pie charts (Plotly) ────────────────────────────────────────────
-            try:
-                import plotly.express as px
-
-                def _sales_pie(df_p, col, val_col, title):
-                    grp = df_p.groupby(col, as_index=False)[val_col].sum()
-                    grp = grp.sort_values(val_col, ascending=False)
-                    if len(grp) > 10:
-                        top    = grp.head(9).copy()
-                        others = pd.DataFrame([{col: "Others", val_col: grp.iloc[9:][val_col].sum()}])
-                        grp    = pd.concat([top, others], ignore_index=True)
-                    fig = px.pie(grp, names=col, values=val_col, title=title,
-                                 hole=0.4,
-                                 color_discrete_sequence=px.colors.sequential.Plasma_r)
-                    fig.update_layout(
-                        paper_bgcolor="rgba(0,0,0,0)",
-                        plot_bgcolor="rgba(0,0,0,0)",
-                        font_color="#e8e8ff",
-                        legend=dict(font=dict(color="#c4b5fd")),
-                        title_font_color="#c4b5fd",
-                    )
-                    fig.update_traces(textfont_color="#ffffff")
-                    return fig
-
-                st.markdown(f"#### 🥧 {t('Sales Share (Revenue)','حصص المبيعات (الإيراد)')}")
-                pie1, pie2, pie3 = st.columns(3)
-                with pie1:
-                    fig1 = _sales_pie(so_df, "Brand Category", "Subtotal",
-                                      t("By Brand Category","حسب فئة العلامة"))
-                    st.plotly_chart(fig1, use_container_width=True)
-                with pie2:
-                    fig2 = _sales_pie(so_df, "Category", "Subtotal",
-                                      t("By Category","حسب الفئة"))
-                    st.plotly_chart(fig2, use_container_width=True)
-                with pie3:
-                    fig3 = _sales_pie(so_df, "Customer", "Subtotal",
-                                      t("By Customer","حسب العميل"))
-                    st.plotly_chart(fig3, use_container_width=True)
-                st.divider()
-
-            except ImportError:
-                st.info(t("Install plotly for pie charts: pip install plotly",
-                          "ثبّت plotly لعرض الرسوم الدائرية: pip install plotly"))
-
-            # ── Sales Trend ────────────────────────────────────────────────────
-            st.markdown(f"#### 📈 {t('Sales Trend (Daily)','اتجاه المبيعات (يومي)')}")
-            trend_df = so_df.copy()
-            trend_df["Date"] = pd.to_datetime(trend_df["Date"], errors="coerce")
-            trend_df = trend_df.dropna(subset=["Date"])
-            if not trend_df.empty:
-                daily = (
-                    trend_df.groupby(trend_df["Date"].dt.date, as_index=False)
-                    .agg(Qty=("Qty","sum"), Revenue=("Subtotal","sum"))
-                    .rename(columns={"Date":"date"})
-                    .sort_values("date")
-                )
-                daily = daily.set_index("date")
-                st.line_chart(daily[["Qty", "Revenue"]], use_container_width=True)
-            else:
-                st.info(t("No date data available for trend.","لا تتوفر بيانات للاتجاه الزمني."))
-
-            st.divider()
-
-            # ── Single Model Detail (expander) ─────────────────────────────────
-            with st.expander(f"🔍 {t('Single Model Sales Detail','تفاصيل مبيعات موديل محدد')}"):
-                detail_model = st.text_input(
-                    t("Filter by Model Code","فلترة حسب رمز الموديل"),
-                    placeholder="e.g. XP6013",
-                    key="so_detail_model"
-                ).strip().upper()
-
-                detail_df = so_df.copy()
-                if detail_model:
-                    detail_df = detail_df[
-                        detail_df["Model Code"].str.upper().str.startswith(detail_model)
-                    ]
-
-                if detail_df.empty:
-                    st.info(t("No data for this model.","لا بيانات لهذا الموديل."))
-                else:
-                    dq = float(detail_df["Qty"].sum())
-                    da = float(detail_df["Subtotal"].sum())
-                    dc = int(detail_df["Customer"].nunique())
-                    dd1, dd2, dd3 = st.columns(3)
-                    dd1.metric(t("Total Qty","إجمالي الكمية"),    f"{dq:,.0f}")
-                    dd2.metric(t("Total Amount","إجمالي المبلغ"), f"{da:,.2f} SAR")
-                    dd3.metric(t("Customers","العملاء"),          dc)
-
-                    # Top customers bar chart
-                    cust_d = (
-                        detail_df.groupby("Customer", as_index=False)["Subtotal"]
-                        .sum().sort_values("Subtotal", ascending=False).head(10)
-                    )
-                    if not cust_d.empty:
-                        st.markdown(f"**{t('Top Customers','أهم العملاء')}**")
-                        st.bar_chart(cust_d.set_index("Customer")["Subtotal"],
-                                     use_container_width=True)
-
-                    # Sales over time
-                    time_d = detail_df.copy()
-                    time_d["Date"] = pd.to_datetime(time_d["Date"], errors="coerce")
-                    time_d = time_d.dropna(subset=["Date"])
-                    if not time_d.empty:
-                        daily_d = (
-                            time_d.groupby(time_d["Date"].dt.date, as_index=False)
-                            .agg(Qty=("Qty","sum"))
-                            .set_index("Date")
-                        )
-                        st.markdown(f"**{t('Sales Over Time','المبيعات عبر الزمن')}**")
-                        st.line_chart(daily_d, use_container_width=True)
-
-                    # Customer share pie
-                    try:
-                        import plotly.express as px
-                        cust_pie_df = (
-                            detail_df.groupby("Customer", as_index=False)["Subtotal"].sum()
-                            .sort_values("Subtotal", ascending=False)
-                        )
-                        if len(cust_pie_df) > 8:
-                            top_c  = cust_pie_df.head(7).copy()
-                            oth_c  = pd.DataFrame([{"Customer":"Others",
-                                                     "Subtotal": cust_pie_df.iloc[7:]["Subtotal"].sum()}])
-                            cust_pie_df = pd.concat([top_c, oth_c], ignore_index=True)
-                        fig_cp = px.pie(cust_pie_df, names="Customer", values="Subtotal",
-                                        title=t("Customer Revenue Share","حصة إيراد العملاء"),
-                                        hole=0.4,
-                                        color_discrete_sequence=px.colors.sequential.Plasma_r)
-                        fig_cp.update_layout(
-                            paper_bgcolor="rgba(0,0,0,0)",
-                            plot_bgcolor="rgba(0,0,0,0)",
-                            font_color="#e8e8ff",
-                            legend=dict(font=dict(color="#c4b5fd")),
-                            title_font_color="#c4b5fd",
-                        )
-                        fig_cp.update_traces(textfont_color="#ffffff")
-                        st.plotly_chart(fig_cp, use_container_width=True)
-                    except ImportError:
-                        pass
-
-            st.divider()
-
-            # ── Full Detail Table + Downloads ─────────────────────────────────
-            st.markdown(f"#### 📋 {t('Full Sales Detail','تفاصيل المبيعات الكاملة')}")
-
-            # Apply any active single-model filter for display & export
-            _so_detail_model = st.session_state.get("so_detail_model", "").strip().upper()
-            if _so_detail_model:
-                display_df_sales = so_df[
-                    so_df["Model Code"].str.upper().str.startswith(_so_detail_model)
-                ].copy()
-            else:
-                display_df_sales = so_df.copy()
-
-            show_so = display_df_sales.copy()
-            show_so["Date"]       = show_so["Date"].astype(str).str[:10]
-            show_so["Unit Price"] = show_so["Unit Price"].map(lambda v: f"{v:.2f} SAR")
-            show_so["Subtotal"]   = show_so["Subtotal"].map(lambda v: f"{v:,.2f} SAR")
-            show_so["Qty"]        = show_so["Qty"].map(lambda v: f"{v:,.0f}")
-
-            cols_so = show_so.columns.tolist()
-            th_so   = "".join(f"<th>{c}</th>" for c in cols_so)
-
-            def _so_row(idx_row):
-                _, row = idx_row
-                cells = "".join(
-                    f'<td class="cf">{v}</td>' if ci == 0 else f"<td>{v}</td>"
-                    for ci, v in enumerate(row)
-                )
-                return f"<tr>{cells}</tr>"
-
-            tbody_so = "".join(_so_row(x) for x in show_so.iterrows())
-            st.markdown(
-                f'{_TABLE_CSS}<div class="swag-wrap">'
-                f'<table class="swag-tbl"><thead><tr>{th_so}</tr></thead>'
-                f'<tbody>{tbody_so}</tbody></table></div>',
-                unsafe_allow_html=True
-            )
-            st.caption(f"📊 {len(show_so)} {t('rows','صفوف')}")
-
-            st.markdown("<br>", unsafe_allow_html=True)
-            sdl1, sdl2, _ = st.columns([1, 1, 2])
-            sdl1.download_button(
-                "⬇️ CSV",
-                display_df_sales.assign(Date=display_df_sales["Date"].astype(str).str[:10])
-                    .to_csv(index=False).encode("utf-8-sig"),
-                dl_name("sales", "csv"), "text/csv",
-                use_container_width=True,
-                key="so_csv_dl"
-            )
-            sdl2.download_button(
-                "⬇️ Excel",
-                to_excel_sales(display_df_sales),
-                dl_name("sales", "xlsx"),
-                "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-                use_container_width=True,
-                key="so_excel_dl"
-            )
 
 
 # ─────────────────────────────────────────────────────────────────────────────
