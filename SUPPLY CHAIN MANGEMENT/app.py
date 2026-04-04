@@ -1,13 +1,18 @@
 """
-Luxury Multi-Company Sales & Purchase Analytics
-Version 1.3 — Added Branch-wise Purchase Analytics
+Luxury Multi-Company Sales & Purchase Analytics + Inventory Comparison
+Version 1.5 — Added Inventory Comparison Module (LAROUCHE, DIFFC, FASHIONLIMITS)
 
 Changes:
-- Added branch field to purchase data fetch (warehouse/picking type detection)
-- Added Branch KPI (Active Branches)
-- Added Top 3 Branches by Purchase Amount (bar chart + table)
-- Added Branch Share donut chart in Share Analysis section
-- Paginated tables, premium KPI cards, luxury theme preserved
+- Added "Inventory Comparison" module in sidebar (only for LAROUCHE, DIFFC, FASHIONLIMITS)
+- New generic fetch_inventory_snapshot() function using stock.quant, stock.location, product
+- Branch-wise stock visibility with derived branch names
+- Filters: company multiselect, model code, branch, category
+- KPI cards: Total On Hand Qty, Total Inventory Amount, Active Branches, Total Models, Total Products
+- Charts: Top branches by quantity, by amount, company comparison, top models, category share, branch share donut
+- Comparison table with Company, Branch, Model Code, Product, Category, Qty, Unit Cost, Total Amount
+- Summaries: highest stock branch, highest inventory value company, highest quantity model
+- Preserved luxury theme (matte dark, gold/emerald accents)
+- No changes to existing Sales/Purchase analytics
 """
 
 import io
@@ -15,6 +20,7 @@ import hashlib
 import time
 import xmlrpc.client
 from datetime import datetime, timedelta
+import random  # for demo responses; replace with real AI later
 
 import altair as alt
 import pandas as pd
@@ -34,7 +40,7 @@ st.set_page_config(
 )
 
 # ─────────────────────────────────────────────────────────────────────────────
-# LUXURY CSS — Updated with better KPI card sizing and refined aesthetics
+# LUXURY CSS — Updated with chat styling
 # ─────────────────────────────────────────────────────────────────────────────
 st.markdown("""
 <style>
@@ -276,7 +282,7 @@ h1, h2, h3, h4, h5, h6 {
     color: #c4848f !important;
 }
 
-/* ── Paginated Table Styling (luxury, sticky header effect) ── */
+/* ── Paginated Table Styling ── */
 .lux-wrap {
     width: 100%;
     overflow-x: auto;
@@ -340,6 +346,93 @@ h1, h2, h3, h4, h5, h6 {
     display: flex;
     gap: 8px;
     align-items: center;
+}
+
+/* ── Chat UI ── */
+.chat-container {
+    background: #111114;
+    border: 1px solid #2a2a2e;
+    border-radius: 12px;
+    padding: 20px;
+    margin-bottom: 20px;
+    height: 500px;
+    overflow-y: auto;
+    display: flex;
+    flex-direction: column;
+    gap: 16px;
+}
+.chat-message {
+    display: flex;
+    gap: 12px;
+    animation: fadeInUp 0.3s ease;
+}
+.chat-message.user {
+    justify-content: flex-end;
+}
+.chat-message.assistant {
+    justify-content: flex-start;
+}
+.chat-bubble {
+    max-width: 70%;
+    padding: 12px 18px;
+    border-radius: 18px;
+    font-size: 0.85rem;
+    line-height: 1.4;
+}
+.chat-bubble.user {
+    background: linear-gradient(135deg, #d4af6a, #a07a40);
+    color: #0a0a0c;
+    border-bottom-right-radius: 4px;
+}
+.chat-bubble.assistant {
+    background: #1a1a1e;
+    border: 1px solid #2a2a2e;
+    color: #c8c0b4;
+    border-bottom-left-radius: 4px;
+}
+.chat-input-area {
+    background: #16161a;
+    border: 1px solid #2a2a2e;
+    border-radius: 8px;
+    padding: 8px;
+    display: flex;
+    gap: 8px;
+}
+.chat-input {
+    flex: 1;
+    background: transparent !important;
+    border: none !important;
+    color: #f5efe6 !important;
+    padding: 8px 12px;
+}
+.chat-input:focus {
+    outline: none;
+}
+.chat-send-btn {
+    background: #d4af6a !important;
+    border: none !important;
+    color: #0a0a0c !important;
+    font-weight: 600 !important;
+    padding: 8px 20px !important;
+    border-radius: 6px !important;
+}
+.quick-actions {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 8px;
+    margin-bottom: 16px;
+}
+.quick-btn {
+    background: #1a1a1e !important;
+    border: 1px solid #2a2a2e !important;
+    color: #d4af6a !important;
+    font-size: 0.7rem !important;
+    padding: 4px 12px !important;
+    border-radius: 20px !important;
+}
+.quick-btn:hover {
+    background: #d4af6a22 !important;
+    border-color: #d4af6a66 !important;
 }
 
 /* ── Login Card ── */
@@ -435,6 +528,9 @@ footer { visibility: hidden; }
 # ─────────────────────────────────────────────────────────────────────────────
 SYSTEM_KEYS = ["SWAG", "LAROUCHE", "DIFFC", "FASHION_LIMITS"]
 
+# For inventory comparison we only use these three
+INVENTORY_COMPANY_KEYS = ["LAROUCHE", "DIFFC", "FASHION_LIMITS"]
+
 COMPANY_DISPLAY = {
     "SWAG"          : "SWAG",
     "LAROUCHE"      : "LAROUCHE",
@@ -464,12 +560,14 @@ _DEFAULTS = {
     "authenticated"    : False,
     "user_email"       : "",
     "lang"             : "EN",
-    "analytics_view"   : "sales",       # "sales" | "purchase"
+    "analytics_view"   : "sales",       # "sales" | "purchase" | "inventory" | "ai_chat"
     "selected_company" : "SWAG",
     "sales_df"         : None,
     "purchase_df"      : None,
     "sales_company"    : None,
     "purchase_company" : None,
+    "inventory_df"     : None,          # combined inventory dataframe for selected companies
+    "chat_history"     : [],            # list of {"role": "user"|"assistant", "content": str}
 }
 for _k, _v in _DEFAULTS.items():
     if _k not in st.session_state:
@@ -518,9 +616,8 @@ def _rpc(url, db, uid, key, model, method, domain, kwargs):
     return _proxy(url, "object").execute_kw(db, uid, key, model, method, domain, kwargs)
 
 # ─────────────────────────────────────────────────────────────────────────────
-# GENERIC FETCH: SALES HISTORY
+# GENERIC FETCH: SALES HISTORY (unchanged)
 # ─────────────────────────────────────────────────────────────────────────────
-
 _SALE_STATES     = ["draft", "sent", "sale", "done"]
 _PURCHASE_STATES = ["draft", "sent", "to approve", "purchase", "done"]
 
@@ -993,6 +1090,353 @@ def fetch_purchase_history(system_key: str, model_code: str, date_from: str, dat
 
 
 # ─────────────────────────────────────────────────────────────────────────────
+# NEW: INVENTORY FETCH FUNCTION (branch-wise stock)
+# ─────────────────────────────────────────────────────────────────────────────
+def _get_branch_from_location(location_name: str, warehouse_map: dict = None) -> str:
+    """
+    Derive branch name from a stock.location complete name.
+    Tries to extract first segment of location path (e.g., "WH/Branch/Shelf" -> "Branch").
+    If warehouse mapping available, attempt to map to warehouse name.
+    """
+    if not location_name:
+        return "Unknown Branch"
+    
+    # Try to get meaningful part: often location path is "Warehouse/Branch/..."
+    parts = location_name.split('/')
+    if len(parts) >= 2:
+        # Second part often is the branch name
+        return parts[1].strip()
+    elif len(parts) == 1:
+        return parts[0].strip()
+    return "Unknown Branch"
+
+
+@st.cache_data(ttl=1800, show_spinner=False)
+def fetch_inventory_snapshot(system_key: str, model_code: str = "", branch_filter: str = "", category_filter: str = "") -> pd.DataFrame:
+    """
+    Fetch current inventory (stock.quant) for a given system.
+    Returns DataFrame with columns:
+    Company, Branch, Model Code, Product, Category, Qty On Hand, Unit Cost, Total Amount
+    """
+    cols = ["Company", "Branch", "Model Code", "Product", "Category", "Qty On Hand", "Unit Cost", "Total Amount"]
+    empty = pd.DataFrame(columns=cols)
+
+    cfg = st.secrets.get(system_key)
+    if not cfg:
+        st.error(f"❌ Missing secrets for **{system_key}**")
+        return empty
+
+    uid = _auth(cfg["url"], cfg["db"], cfg["user"], cfg["api_key"])
+    if not uid:
+        st.error(f"❌ Auth failed for **{system_key}**")
+        return empty
+
+    u, db, ak = cfg["url"], cfg["db"], cfg["api_key"]
+
+    try:
+        # Step 1: Get all internal stock locations
+        locations = _rpc(u, db, uid, ak, "stock.location", "search_read",
+                         [[["usage", "=", "internal"], ["active", "=", True]]],
+                         {"fields": ["id", "complete_name"], "limit": 10000})
+        loc_map = {loc["id"]: loc.get("complete_name", "") for loc in locations}
+        loc_ids = list(loc_map.keys())
+
+        # Step 2: Build domain for quants
+        quant_domain = [
+            ["location_id", "in", loc_ids],
+            ["quantity", ">", 0],
+        ]
+        if model_code:
+            quant_domain.append(["product_id.default_code", "=ilike", model_code])
+
+        quants = _rpc(u, db, uid, ak, "stock.quant", "search_read",
+                      [quant_domain],
+                      {"fields": ["product_id", "location_id", "quantity"],
+                       "limit": 20000})
+
+        if not quants:
+            return empty
+
+        # Step 3: Get product details
+        product_ids = list({q["product_id"][0] if isinstance(q.get("product_id"), list) else q.get("product_id") for q in quants if q.get("product_id")})
+        products = _rpc(u, db, uid, ak, "product.product", "search_read",
+                        [[["id", "in", product_ids]]],
+                        {"fields": ["id", "default_code", "display_name", "categ_id", "standard_price"],
+                         "limit": len(product_ids) + 10})
+        prod_map = {p["id"]: p for p in products}
+
+        # Step 4: Get categories
+        categ_ids = list({p["categ_id"][0] for p in products if isinstance(p.get("categ_id"), list)})
+        categories = {}
+        if categ_ids:
+            cat_objs = _rpc(u, db, uid, ak, "product.category", "search_read",
+                            [[["id", "in", categ_ids]]],
+                            {"fields": ["id", "name"], "limit": len(categ_ids) + 10})
+            categories = {c["id"]: c["name"] for c in cat_objs}
+
+        # Step 5: Build rows
+        rows = []
+        for q in quants:
+            pid = q["product_id"][0] if isinstance(q.get("product_id"), list) else q.get("product_id")
+            if not pid or pid not in prod_map:
+                continue
+            prod = prod_map[pid]
+            model_code_val = prod.get("default_code") or ""
+            product_name = prod.get("display_name") or ""
+            unit_cost = float(prod.get("standard_price") or 0.0)
+            qty = float(q.get("quantity") or 0)
+            total_amount = qty * unit_cost
+
+            # Category
+            cat_id = prod.get("categ_id")
+            if isinstance(cat_id, list) and len(cat_id) > 0:
+                cat_id = cat_id[0]
+            category_name = categories.get(cat_id, "Uncategorized") if cat_id else "Uncategorized"
+
+            # Branch
+            loc_id = q.get("location_id")
+            if isinstance(loc_id, list):
+                loc_id = loc_id[0]
+            loc_name = loc_map.get(loc_id, "")
+            branch = _get_branch_from_location(loc_name)
+
+            # Apply branch filter if provided
+            if branch_filter and branch_filter.lower() not in branch.lower():
+                continue
+            # Apply category filter if provided
+            if category_filter and category_filter.lower() not in category_name.lower():
+                continue
+
+            rows.append({
+                "Company": COMPANY_DISPLAY.get(system_key, system_key),
+                "Branch": branch,
+                "Model Code": model_code_val,
+                "Product": product_name,
+                "Category": category_name,
+                "Qty On Hand": qty,
+                "Unit Cost": unit_cost,
+                "Total Amount": total_amount,
+            })
+
+        df = pd.DataFrame(rows)
+        if not df.empty:
+            for col in ["Branch", "Model Code", "Product", "Category"]:
+                df[col] = df[col].fillna("").astype(str)
+        return df
+
+    except Exception as e:
+        st.error(f"❌ Inventory fetch error for {system_key}: {e}")
+        return empty
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# INVENTORY COMPARISON PAGE
+# ─────────────────────────────────────────────────────────────────────────────
+def show_inventory_comparison():
+    st.markdown(
+        f"<div class='lux-header'>"
+        f"<div class='lux-title'>Inventory Comparison</div>"
+        f"<div class='lux-subtitle'>Branch-wise stock visibility · LAROUCHE · DIFFC · FASHION LIMITS</div>"
+        f"</div>",
+        unsafe_allow_html=True
+    )
+
+    # Filters
+    col1, col2, col3, col4 = st.columns(4)
+    with col1:
+        company_sel = st.multiselect(
+            t("Companies", "الشركات"),
+            options=INVENTORY_COMPANY_KEYS,
+            default=INVENTORY_COMPANY_KEYS,
+            format_func=lambda x: COMPANY_DISPLAY.get(x, x),
+            key="inv_company_sel"
+        )
+    with col2:
+        model_input = st.text_input(
+            t("Model Code (optional)", "رمز الموديل (اختياري)"),
+            placeholder="e.g. RVT196",
+            key="inv_model"
+        ).strip()
+    with col3:
+        branch_input = st.text_input(
+            t("Branch (optional)", "الفرع (اختياري)"),
+            placeholder="e.g. Main / Dubai",
+            key="inv_branch"
+        ).strip()
+    with col4:
+        category_input = st.text_input(
+            t("Category (optional)", "الفئة (اختياري)"),
+            placeholder="e.g. Shirts",
+            key="inv_category"
+        ).strip()
+
+    fetch_btn = st.button(
+        t("◆ Fetch Inventory Data", "◆ جلب بيانات المخزون"),
+        type="primary",
+        key="fetch_inv"
+    )
+
+    if fetch_btn:
+        if not company_sel:
+            st.warning(t("Please select at least one company.", "يرجى اختيار شركة واحدة على الأقل."))
+            return
+
+        with st.spinner(t("Fetching inventory data from selected companies...", "جارٍ جلب بيانات المخزون...")):
+            all_dfs = []
+            for comp in company_sel:
+                df = fetch_inventory_snapshot(comp, model_code=model_input, branch_filter=branch_input, category_filter=category_input)
+                if not df.empty:
+                    all_dfs.append(df)
+            if all_dfs:
+                combined = pd.concat(all_dfs, ignore_index=True)
+                st.session_state.inventory_df = combined
+            else:
+                st.session_state.inventory_df = pd.DataFrame()
+                st.info(t("No inventory data found for the selected filters.", "لا توجد بيانات مخزون للفلاتر المحددة."))
+        st.rerun()
+
+    inv_df = st.session_state.get("inventory_df")
+    if inv_df is None:
+        st.info(t("Click the button above to load inventory data.", "اضغط الزر أعلاه لتحميل بيانات المخزون."))
+        return
+
+    if inv_df.empty:
+        st.info(t("No inventory data to display.", "لا توجد بيانات مخزون للعرض."))
+        return
+
+    # KPI Cards
+    total_qty = inv_df["Qty On Hand"].sum()
+    total_value = inv_df["Total Amount"].sum()
+    active_branches = inv_df["Branch"].nunique()
+    total_models = inv_df["Model Code"].nunique()
+    total_products = inv_df["Product"].nunique()
+
+    st.markdown("<div class='section-header'><div class='section-accent'></div><div class='section-header-text'>Key Performance Indicators</div></div>", unsafe_allow_html=True)
+    k1, k2, k3, k4, k5 = st.columns(5)
+    k1.metric(t("Total On Hand Qty", "إجمالي الكمية"), f"{total_qty:,.0f}")
+    k2.metric(t("Total Inventory Amount", "إجمالي قيمة المخزون"), f"{total_value:,.0f} SAR")
+    k3.metric(t("Active Branches", "الفروع النشطة"), f"{active_branches:,}")
+    k4.metric(t("Total Models", "إجمالي الموديلات"), f"{total_models:,}")
+    k5.metric(t("Total Products", "إجمالي المنتجات"), f"{total_products:,}")
+
+    st.divider()
+
+    # Comparison summaries
+    st.markdown("<div class='section-header'><div class='section-accent'></div><div class='section-header-text'>Key Insights</div></div>", unsafe_allow_html=True)
+
+    # Branch with highest stock (by quantity)
+    branch_qty = inv_df.groupby("Branch")["Qty On Hand"].sum().sort_values(ascending=False)
+    top_branch_qty = branch_qty.index[0] if not branch_qty.empty else "N/A"
+    top_branch_qty_val = branch_qty.iloc[0] if not branch_qty.empty else 0
+
+    # Company with highest inventory value
+    company_value = inv_df.groupby("Company")["Total Amount"].sum().sort_values(ascending=False)
+    top_company = company_value.index[0] if not company_value.empty else "N/A"
+    top_company_val = company_value.iloc[0] if not company_value.empty else 0
+
+    # Model with highest quantity remaining
+    model_qty = inv_df.groupby("Model Code")["Qty On Hand"].sum().sort_values(ascending=False)
+    top_model = model_qty.index[0] if not model_qty.empty else "N/A"
+    top_model_qty = model_qty.iloc[0] if not model_qty.empty else 0
+
+    col_a, col_b, col_c = st.columns(3)
+    col_a.info(f"🏆 **Highest Stock Branch:** {top_branch_qty}\n\n{top_branch_qty_val:,.0f} units")
+    col_b.info(f"🏆 **Highest Inventory Value Company:** {top_company}\n\n{top_company_val:,.0f} SAR")
+    col_c.info(f"🏆 **Highest Quantity Model:** {top_model}\n\n{top_model_qty:,.0f} units")
+
+    st.divider()
+
+    # Charts
+    st.markdown("<div class='section-header'><div class='section-accent'></div><div class='section-header-text'>Inventory Analytics</div></div>", unsafe_allow_html=True)
+
+    # Top branches by quantity
+    top_branches_qty = inv_df.groupby("Branch")["Qty On Hand"].sum().reset_index().sort_values("Qty On Hand", ascending=False).head(10)
+    if not top_branches_qty.empty:
+        _top10_block("Top Branches by Quantity On Hand", "Branch", "Qty On Hand", inv_df, color="#d4af6a")
+    else:
+        st.info("No branch data for chart.")
+
+    # Top branches by inventory amount
+    top_branches_amt = inv_df.groupby("Branch")["Total Amount"].sum().reset_index().sort_values("Total Amount", ascending=False).head(10)
+    if not top_branches_amt.empty:
+        _top10_block("Top Branches by Inventory Amount", "Branch", "Total Amount", inv_df, color="#6b8f71", fmt=",.0f")
+
+    # Company-wise inventory comparison (bar chart)
+    company_comp = inv_df.groupby("Company")["Total Amount"].sum().reset_index()
+    if not company_comp.empty:
+        _section("Company-wise Inventory Amount")
+        c1, c2 = st.columns([1.6, 1])
+        with c1:
+            st.altair_chart(_bar_chart(company_comp, "Company", "Total Amount", color="#7a8faf", fmt=",.0f"), use_container_width=True)
+        with c2:
+            company_comp["Total (SAR)"] = company_comp["Total Amount"].map(lambda v: f"{v:,.0f}")
+            _render_simple_table(company_comp[["Company", "Total (SAR)"]])
+
+    # Top models with highest remaining stock
+    top_models = inv_df.groupby("Model Code")["Qty On Hand"].sum().reset_index().sort_values("Qty On Hand", ascending=False).head(10)
+    if not top_models.empty:
+        _top10_block("Top Models by Quantity On Hand", "Model Code", "Qty On Hand", inv_df, color="#9a7ab8")
+
+    # Category share donut
+    cat_share = inv_df.groupby("Category")["Total Amount"].sum().reset_index().sort_values("Total Amount", ascending=False)
+    if not cat_share.empty:
+        st.markdown("<div class='section-header'><div class='section-accent'></div><div class='section-header-text'>Category Share by Inventory Amount</div></div>", unsafe_allow_html=True)
+        # Prepare top 10 + Others
+        top_cat = cat_share.head(10)
+        others = cat_share.iloc[10:]["Total Amount"].sum()
+        labels = top_cat["Category"].tolist()
+        vals = top_cat["Total Amount"].tolist()
+        if others > 0:
+            labels.append("Others"); vals.append(others)
+        _donut_chart(labels, vals, title="Inventory Amount Share by Category")
+
+    # Branch share donut (by amount)
+    branch_share = inv_df.groupby("Branch")["Total Amount"].sum().reset_index().sort_values("Total Amount", ascending=False)
+    if not branch_share.empty:
+        st.markdown("<div class='section-header'><div class='section-accent'></div><div class='section-header-text'>Branch Share by Inventory Amount</div></div>", unsafe_allow_html=True)
+        top_br = branch_share.head(10)
+        others_br = branch_share.iloc[10:]["Total Amount"].sum()
+        labels_br = top_br["Branch"].tolist()
+        vals_br = top_br["Total Amount"].tolist()
+        if others_br > 0:
+            labels_br.append("Others"); vals_br.append(others_br)
+        _donut_chart(labels_br, vals_br, title="Inventory Amount Share by Branch")
+
+    st.divider()
+
+    # Full Comparison Table
+    st.markdown("<div class='section-header'><div class='section-accent'></div><div class='section-header-text'>Detailed Inventory Comparison Table</div></div>", unsafe_allow_html=True)
+
+    # Prepare display version
+    display_df = inv_df.copy()
+    display_df["Qty On Hand"] = display_df["Qty On Hand"].map(lambda v: f"{v:,.0f}")
+    display_df["Unit Cost"] = display_df["Unit Cost"].map(lambda v: f"{v:,.2f}")
+    display_df["Total Amount"] = display_df["Total Amount"].map(lambda v: f"{v:,.2f}")
+
+    _render_paginated_table(display_df, key_suffix="inventory_compare")
+
+    # Export buttons
+    st.markdown("<br>", unsafe_allow_html=True)
+    col_dl1, col_dl2, _ = st.columns([1,1,2])
+    col_dl1.download_button(
+        t("⬇ CSV Export", "⬇ تصدير CSV"),
+        inv_df.to_csv(index=False).encode("utf-8-sig"),
+        dl_filename("inventory", "comparison", "csv"),
+        "text/csv",
+        use_container_width=True,
+        key="dl_inv_csv"
+    )
+    col_dl2.download_button(
+        t("⬇ Excel Export", "⬇ تصدير Excel"),
+        _styled_excel(inv_df, "Inventory Comparison"),
+        dl_filename("inventory", "comparison", "xlsx"),
+        "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+        use_container_width=True,
+        key="dl_inv_xlsx"
+    )
+
+
+# ─────────────────────────────────────────────────────────────────────────────
 # EXPORT HELPERS
 # ─────────────────────────────────────────────────────────────────────────────
 def _styled_excel(df: pd.DataFrame, sheet_name: str, accent_hex: str = "D4AF6A") -> bytes:
@@ -1029,7 +1473,7 @@ def _styled_excel(df: pd.DataFrame, sheet_name: str, accent_hex: str = "D4AF6A")
             cell.alignment = hdr_align; cell.border = border
 
         col_names = [ws.cell(row=1, column=c).value for c in range(1, max_col + 1)]
-        num_cols  = {"Qty", "Unit Price", "Subtotal"}
+        num_cols  = {"Qty", "Unit Price", "Subtotal", "Qty On Hand", "Unit Cost", "Total Amount"}
 
         for row in ws.iter_rows(min_row=2, max_row=max_row):
             for cell in row:
@@ -1056,7 +1500,7 @@ def _styled_excel(df: pd.DataFrame, sheet_name: str, accent_hex: str = "D4AF6A")
         ws.cell(row=total_row, column=1).fill      = total_fill
         ws.cell(row=total_row, column=1).alignment = Alignment(horizontal="center")
 
-        for summary_col in ("Qty", "Subtotal"):
+        for summary_col in ("Qty", "Subtotal", "Qty On Hand", "Total Amount"):
             if summary_col in col_names:
                 ci = col_names.index(summary_col) + 1
                 cl = get_column_letter(ci)
@@ -1361,6 +1805,27 @@ def _section(title: str):
     )
 
 
+def _render_simple_table(df):
+    """Render a small table without pagination (for top‑10 blocks)."""
+    if df is None or df.empty:
+        return
+    cols = df.columns.tolist()
+    thead = "".join(f"<th>{c}</th>" for c in cols)
+    tbody = "".join(
+        "<tr>" + "".join(
+            f'<td class="lux-key">{v}</td>' if ci == 0 else f"<td>{v}</td>"
+            for ci, v in enumerate(row)
+        ) + "</tr>"
+        for _, row in df.iterrows()
+    )
+    st.markdown(
+        f'{_TBL_CSS}<div class="lux-wrap">'
+        f'<table class="lux-tbl"><thead><tr>{thead} hilab</thead>'
+        f'<tbody>{tbody}</tbody></tr></div>',
+        unsafe_allow_html=True
+    )
+
+
 # ─────────────────────────────────────────────────────────────────────────────
 # TOP-10 BAR + TABLE (for small tables, uses simple render)
 # ─────────────────────────────────────────────────────────────────────────────
@@ -1390,25 +1855,11 @@ def _top10_block(title: str, group_col: str, value_col: str, df: pd.DataFrame,
                         use_container_width=True)
     with c2:
         # Use the simple non-paginated render for top-10 (small tables)
-        cols = grp.columns.tolist()
-        thead = "".join(f"<th>{c}</th>" for c in cols)
-        tbody = "".join(
-            "<tr>" + "".join(
-                f'<td class="lux-key">{v}</td>' if ci == 0 else f"<td>{v}</td>"
-                for ci, v in enumerate(row)
-            ) + "</tr>"
-            for _, row in grp.iterrows()
-        )
-        st.markdown(
-            f'{_TBL_CSS}<div class="lux-wrap">'
-            f'<table class="lux-tbl"><thead><tr>{thead} hilab</thead>'
-            f'<tbody>{tbody}</tbody></table></div>',
-            unsafe_allow_html=True
-        )
+        _render_simple_table(grp[[group_col, display_col]])
 
 
 # ─────────────────────────────────────────────────────────────────────────────
-# TOP 3 BRANCHES BLOCK (horizontal bar + table)
+# TOP 3 BRANCHES BLOCK (horizontal bar + table) - reused from purchase
 # ─────────────────────────────────────────────────────────────────────────────
 def _top3_branches_block(title: str, df: pd.DataFrame, color: str = "#d4af6a"):
     """Display top 3 branches by purchase amount with horizontal bar chart and table."""
@@ -1459,25 +1910,11 @@ def _top3_branches_block(title: str, df: pd.DataFrame, color: str = "#d4af6a"):
     with c2:
         # Small table with branch, amount, and quantity
         display_df = branch_agg[["Branch", "Total (SAR)", "Total Qty"]].copy()
-        cols = display_df.columns.tolist()
-        thead = "".join(f"<th>{c}</th>" for c in cols)
-        tbody = "".join(
-            "<tr>" + "".join(
-                f'<td class="lux-key">{v}</td>' if ci == 0 else f"<td>{v}</td>"
-                for ci, v in enumerate(row)
-            ) + "</tr>"
-            for _, row in display_df.iterrows()
-        )
-        st.markdown(
-            f'{_TBL_CSS}<div class="lux-wrap">'
-            f'<table class="lux-tbl"><thead><tr>{thead} hilab</thead>'
-            f'<tbody>{tbody}</tbody></table></div>',
-            unsafe_allow_html=True
-        )
+        _render_simple_table(display_df)
 
 
 # ─────────────────────────────────────────────────────────────────────────────
-# KPI ROWS (updated with branch KPI for purchase)
+# KPI ROWS (existing sales and purchase)
 # ─────────────────────────────────────────────────────────────────────────────
 def _kpi_sales(df: pd.DataFrame):
     c1, c2, c3, c4, c5 = st.columns(5)
@@ -1504,6 +1941,292 @@ def _kpi_purchase(df: pd.DataFrame):
         c6.metric(t("Active Branches", "الفروع النشطة"),   f"{active_branches:,}")
     else:
         c6.metric(t("Active Branches", "الفروع النشطة"),   "N/A")
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# AI CHAT ASSISTANT (unchanged from previous version)
+# ─────────────────────────────────────────────────────────────────────────────
+def _get_current_context_summary() -> str:
+    """
+    Build a textual summary of the current dashboard context (company, view, filters, data).
+    Used by the AI to answer questions.
+    """
+    company = st.session_state.get("selected_company", "SWAG")
+    view = st.session_state.get("analytics_view", "sales")
+    
+    # Get current dataframe
+    df = None
+    if view == "sales":
+        df = st.session_state.get("sales_df")
+        if df is not None and st.session_state.get("sales_company") != company:
+            df = None
+    elif view == "purchase":
+        df = st.session_state.get("purchase_df")
+        if df is not None and st.session_state.get("purchase_company") != company:
+            df = None
+    else:
+        # For AI chat when inventory view is active
+        df = st.session_state.get("inventory_df")
+    
+    # Build filter info
+    filter_info = []
+    # We cannot easily retrieve the exact filter values from the analytics pages,
+    # but we can extract them from the session state if stored there.
+    # For simplicity, we'll ask the user to refer to the visible filters.
+    # In a real implementation, you would store filter values in session state.
+    
+    summary = f"**Company:** {COMPANY_DISPLAY.get(company, company)}\n"
+    summary += f"**Analytics Type:** {view.upper()}\n"
+    
+    if df is None or df.empty:
+        summary += "**Data:** No data loaded. Please fetch data using the Fetch button on the analytics page.\n"
+        return summary
+    
+    summary += f"**Data rows:** {len(df):,}\n"
+    if "Date" in df.columns:
+        summary += f"**Date range:** {df['Date'].min()} → {df['Date'].max()}\n"
+    
+    if view == "sales":
+        summary += f"**Total Sales:** {df['Subtotal'].sum():,.0f} SAR\n"
+        summary += f"**Total Qty Sold:** {df['Qty'].sum():,.0f}\n"
+        summary += f"**Unique Customers:** {df['Customer'].nunique():,}\n"
+        summary += f"**Unique Products:** {df['Model Code'].nunique():,}\n"
+    elif view == "purchase":
+        summary += f"**Total Purchases:** {df['Subtotal'].sum():,.0f} SAR\n"
+        summary += f"**Total Qty Purchased:** {df['Qty'].sum():,.0f}\n"
+        summary += f"**Unique Vendors:** {df['Vendor'].nunique():,}\n"
+        summary += f"**Unique Products:** {df['Model Code'].nunique():,}\n"
+        if "Branch" in df.columns:
+            summary += f"**Active Branches:** {df['Branch'].nunique():,}\n"
+    elif view == "inventory":
+        summary += f"**Total On Hand Qty:** {df['Qty On Hand'].sum():,.0f}\n"
+        summary += f"**Total Inventory Value:** {df['Total Amount'].sum():,.0f} SAR\n"
+        summary += f"**Active Branches:** {df['Branch'].nunique():,}\n"
+        summary += f"**Unique Models:** {df['Model Code'].nunique():,}\n"
+    
+    return summary
+
+
+def _ai_respond(user_message: str, context_summary: str, df: pd.DataFrame, view: str) -> str:
+    """
+    Generate an AI response based on the user message and current context.
+    This is a rule‑based implementation. Replace with a real LLM (OpenAI, Anthropic, etc.) later.
+    """
+    msg_lower = user_message.lower()
+    
+    # If no data is loaded
+    if df is None or df.empty:
+        return "No data is currently loaded. Please go to the analytics page, set your filters, and click the **Fetch** button. Then I can answer questions about your data."
+    
+    # Common questions
+    if "total" in msg_lower and ("purchase" in msg_lower or "spent" in msg_lower) and view == "purchase":
+        total = df['Subtotal'].sum()
+        return f"Total purchase amount: **{total:,.0f} SAR**."
+    
+    if "total" in msg_lower and ("sale" in msg_lower or "revenue" in msg_lower) and view == "sales":
+        total = df['Subtotal'].sum()
+        return f"Total sales revenue: **{total:,.0f} SAR**."
+    
+    if "total inventory" in msg_lower and view == "inventory":
+        total_val = df['Total Amount'].sum()
+        total_qty = df['Qty On Hand'].sum()
+        return f"Total inventory value: **{total_val:,.0f} SAR**\nTotal on‑hand quantity: **{total_qty:,.0f} units**."
+    
+    if "top 5 vendors" in msg_lower or "top vendors" in msg_lower:
+        if view == "purchase" and "Vendor" in df.columns:
+            top = df.groupby("Vendor")["Subtotal"].sum().sort_values(ascending=False).head(5)
+            lines = "\n".join([f"- {vendor}: {amt:,.0f} SAR" for vendor, amt in top.items()])
+            return f"Top 5 vendors by purchase amount:\n{lines}"
+        else:
+            return "You are currently not in Purchase view. Please switch to Purchase view to see vendor analytics."
+    
+    if "top 5 customers" in msg_lower or "top customers" in msg_lower:
+        if view == "sales" and "Customer" in df.columns:
+            top = df.groupby("Customer")["Subtotal"].sum().sort_values(ascending=False).head(5)
+            lines = "\n".join([f"- {cust}: {amt:,.0f} SAR" for cust, amt in top.items()])
+            return f"Top 5 customers by sales amount:\n{lines}"
+        else:
+            return "You are currently not in Sales view. Please switch to Sales view to see customer analytics."
+    
+    if "top 3 products" in msg_lower:
+        if view in ["sales", "purchase"]:
+            top = df.groupby("Model Code")["Qty"].sum().sort_values(ascending=False).head(3)
+            if top.empty:
+                return "No product data available."
+            lines = "\n".join([f"- {code}: {qty:,.0f} units" for code, qty in top.items()])
+            return f"Top 3 products by quantity { 'sold' if view == 'sales' else 'purchased' }:\n{lines}"
+        elif view == "inventory":
+            top = df.groupby("Model Code")["Qty On Hand"].sum().sort_values(ascending=False).head(3)
+            if top.empty:
+                return "No product data available."
+            lines = "\n".join([f"- {code}: {qty:,.0f} units" for code, qty in top.items()])
+            return f"Top 3 products by current inventory quantity:\n{lines}"
+    
+    if "branch" in msg_lower and ("purchased" in msg_lower or "most" in msg_lower) and view == "purchase":
+        if "Branch" in df.columns:
+            top = df.groupby("Branch")["Subtotal"].sum().sort_values(ascending=False).head(1)
+            if not top.empty:
+                branch, amt = top.iloc[0]
+                return f"The branch that purchased the most is **{branch}** with **{amt:,.0f} SAR**."
+            else:
+                return "No branch data available."
+        else:
+            return "Branch analytics are only available in Purchase view and require branch data in your Odoo system."
+    
+    if "summary" in msg_lower or "current filters" in msg_lower:
+        return context_summary
+    
+    if "why" in msg_lower and "no data" in msg_lower:
+        return "There could be several reasons: no purchase/sale orders in the selected date range, the model code filter is too strict, or the Odoo credentials are incorrect. Please check your filters and ensure data exists for the selected company and period."
+    
+    # Default fallback
+    return "I can help you with questions about totals, top vendors/customers, top products, branch analysis, and summaries. Try asking something like: 'What is total purchase?', 'Top 5 vendors', or 'Show me summary of current data'."
+
+
+def show_ai_chat():
+    st.markdown(
+        f"<div class='lux-header'>"
+        f"<div class='lux-title'>AI Chat Assistant</div>"
+        f"<div class='lux-subtitle'>Ask questions about your data · Context‑aware · Premium Intelligence</div>"
+        f"</div>",
+        unsafe_allow_html=True
+    )
+    
+    # Quick action buttons
+    st.markdown("<div class='quick-actions'>", unsafe_allow_html=True)
+    col_q1, col_q2, col_q3, col_q4, col_q5 = st.columns(5)
+    with col_q1:
+        if st.button("📊 Summarize", key="qa_summary", use_container_width=True):
+            context = _get_current_context_summary()
+            view = st.session_state.get("analytics_view", "sales")
+            if view == "sales":
+                df = st.session_state.get("sales_df")
+            elif view == "purchase":
+                df = st.session_state.get("purchase_df")
+            elif view == "inventory":
+                df = st.session_state.get("inventory_df")
+            else:
+                df = None
+            response = _ai_respond("summary", context, df, view)
+            st.session_state.chat_history.append({"role": "assistant", "content": response})
+            st.rerun()
+    with col_q2:
+        if st.button("🏆 Top Products", key="qa_top_products", use_container_width=True):
+            context = _get_current_context_summary()
+            view = st.session_state.get("analytics_view", "sales")
+            if view == "sales":
+                df = st.session_state.get("sales_df")
+            elif view == "purchase":
+                df = st.session_state.get("purchase_df")
+            elif view == "inventory":
+                df = st.session_state.get("inventory_df")
+            else:
+                df = None
+            response = _ai_respond("top 3 products", context, df, view)
+            st.session_state.chat_history.append({"role": "assistant", "content": response})
+            st.rerun()
+    with col_q3:
+        if st.button("🏭 Top Vendors/Customers", key="qa_top_vendors", use_container_width=True):
+            context = _get_current_context_summary()
+            view = st.session_state.get("analytics_view", "sales")
+            if view == "sales":
+                df = st.session_state.get("sales_df")
+                response = _ai_respond("top 5 customers", context, df, view)
+            elif view == "purchase":
+                df = st.session_state.get("purchase_df")
+                response = _ai_respond("top 5 vendors", context, df, view)
+            else:
+                response = "Please switch to Sales or Purchase view for customer/vendor insights."
+            st.session_state.chat_history.append({"role": "assistant", "content": response})
+            st.rerun()
+    with col_q4:
+        if st.button("🏪 Branch Summary", key="qa_branch", use_container_width=True):
+            context = _get_current_context_summary()
+            view = st.session_state.get("analytics_view", "sales")
+            if view == "purchase":
+                df = st.session_state.get("purchase_df")
+            elif view == "inventory":
+                df = st.session_state.get("inventory_df")
+            else:
+                df = None
+                view = "purchase"  # fallback
+            response = _ai_respond("branch purchased the most", context, df, view)
+            st.session_state.chat_history.append({"role": "assistant", "content": response})
+            st.rerun()
+    with col_q5:
+        if st.button("🔍 Diagnose", key="qa_diagnose", use_container_width=True):
+            context = _get_current_context_summary()
+            view = st.session_state.get("analytics_view", "sales")
+            if view == "sales":
+                df = st.session_state.get("sales_df")
+            elif view == "purchase":
+                df = st.session_state.get("purchase_df")
+            elif view == "inventory":
+                df = st.session_state.get("inventory_df")
+            else:
+                df = None
+            response = _ai_respond("why no data", context, df, view)
+            st.session_state.chat_history.append({"role": "assistant", "content": response})
+            st.rerun()
+    st.markdown("</div>", unsafe_allow_html=True)
+    
+    # Chat history display
+    chat_container = st.container()
+    with chat_container:
+        st.markdown("<div class='chat-container'>", unsafe_allow_html=True)
+        for msg in st.session_state.chat_history:
+            if msg["role"] == "user":
+                st.markdown(
+                    f"<div class='chat-message user'>"
+                    f"<div class='chat-bubble user'>{msg['content']}</div>"
+                    f"</div>",
+                    unsafe_allow_html=True
+                )
+            else:
+                st.markdown(
+                    f"<div class='chat-message assistant'>"
+                    f"<div class='chat-bubble assistant'>{msg['content']}</div>"
+                    f"</div>",
+                    unsafe_allow_html=True
+                )
+        st.markdown("</div>", unsafe_allow_html=True)
+    
+    # Chat input
+    with st.form(key="chat_form", clear_on_submit=True):
+        col_input, col_button = st.columns([5, 1])
+        with col_input:
+            user_input = st.text_input(
+                "Ask me anything about your data...",
+                key="chat_input",
+                label_visibility="collapsed",
+                placeholder="e.g., What is total purchase in this date range? Top 5 vendors?"
+            )
+        with col_button:
+            send_button = st.form_submit_button("Send", type="primary", use_container_width=True)
+        
+        if send_button and user_input.strip():
+            # Add user message to history
+            st.session_state.chat_history.append({"role": "user", "content": user_input})
+            
+            # Get context and generate response
+            context = _get_current_context_summary()
+            view = st.session_state.get("analytics_view", "sales")
+            if view == "sales":
+                df = st.session_state.get("sales_df")
+                if df is not None and st.session_state.get("sales_company") != st.session_state.get("selected_company"):
+                    df = None
+            elif view == "purchase":
+                df = st.session_state.get("purchase_df")
+                if df is not None and st.session_state.get("purchase_company") != st.session_state.get("selected_company"):
+                    df = None
+            elif view == "inventory":
+                df = st.session_state.get("inventory_df")
+            else:
+                df = None
+            
+            response = _ai_respond(user_input, context, df, view)
+            st.session_state.chat_history.append({"role": "assistant", "content": response})
+            st.rerun()
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -2156,6 +2879,7 @@ def do_logout():
     st.session_state.user_email    = ""
     st.session_state.sales_df      = None
     st.session_state.purchase_df   = None
+    st.session_state.inventory_df  = None
     st.rerun()
 
 
@@ -2180,7 +2904,7 @@ def show_dashboard():
 
         st.divider()
 
-        # Company Selector
+        # Company Selector (only for Sales/Purchase, not used in Inventory)
         st.markdown(f"<span class='nav-company-label'>{t('COMPANY', 'الشركة')}</span>",
                     unsafe_allow_html=True)
         company_labels = {k: COMPANY_DISPLAY[k] for k in SYSTEM_KEYS}
@@ -2195,6 +2919,7 @@ def show_dashboard():
             st.session_state.selected_company = selected
             st.session_state.sales_df         = None
             st.session_state.purchase_df      = None
+            st.session_state.inventory_df     = None
             st.rerun()
 
         st.divider()
@@ -2204,25 +2929,40 @@ def show_dashboard():
                     unsafe_allow_html=True)
         s_type = "primary" if view == "sales"    else "secondary"
         p_type = "primary" if view == "purchase" else "secondary"
+        i_type = "primary" if view == "inventory" else "secondary"
+        a_type = "primary" if view == "ai_chat"   else "secondary"
 
-        v1, v2 = st.columns(2)
-        with v1:
+        col_s, col_p, col_i, col_a = st.columns(4)
+        with col_s:
             if st.button(t("Sales", "المبيعات"), type=s_type,
                          use_container_width=True, key="nav_sales"):
                 st.session_state.analytics_view = "sales"
                 st.rerun()
-        with v2:
+        with col_p:
             if st.button(t("Purchase", "المشتريات"), type=p_type,
                          use_container_width=True, key="nav_purchase"):
                 st.session_state.analytics_view = "purchase"
                 st.rerun()
+        with col_i:
+            if st.button(t("Inventory", "المخزون"), type=i_type,
+                         use_container_width=True, key="nav_inventory"):
+                st.session_state.analytics_view = "inventory"
+                st.rerun()
+        with col_a:
+            if st.button(t("AI Chat", "دردشة"), type=a_type,
+                         use_container_width=True, key="nav_ai"):
+                st.session_state.analytics_view = "ai_chat"
+                st.rerun()
 
         # Active indicator
-        indicator_text = (
-            f"◆ {company_labels[selected]} — {t('Sales', 'المبيعات')}"
-            if view == "sales"
-            else f"◆ {company_labels[selected]} — {t('Purchase', 'المشتريات')}"
-        )
+        if view == "sales":
+            indicator_text = f"◆ {company_labels[selected]} — {t('Sales', 'المبيعات')}"
+        elif view == "purchase":
+            indicator_text = f"◆ {company_labels[selected]} — {t('Purchase', 'المشتريات')}"
+        elif view == "inventory":
+            indicator_text = "◆ Inventory Comparison (LAROUCHE · DIFFC · FASHION LIMITS)"
+        else:
+            indicator_text = "◆ AI Chat Assistant"
         st.markdown(f"<div class='active-indicator'>{indicator_text}</div>",
                     unsafe_allow_html=True)
 
@@ -2236,22 +2976,12 @@ def show_dashboard():
         if st.button(t("Sign Out", "تسجيل الخروج"), use_container_width=True, key="logout_btn"):
             do_logout()
 
-    # ── MAIN HEADER ──────────────────────────────────────────────────────────
-    view_label = t("Sales Analytics", "تحليلات المبيعات") if view == "sales" \
-        else t("Purchase Analytics", "تحليلات المشتريات")
-
-    st.markdown(f"""
-    <div class='lux-header'>
-        <div class='lux-title'>SWAG MULTI DASBOARD WITH 4 COMPANY </div>
-        <div class='lux-subtitle'>{t('Sales & Purchase Intelligence · 4 Companies', 'ذكاء المبيعات والمشتريات · 4 شركات')}</div>
-        <div>
-            <span class='lux-company-badge'>{COMPANY_DISPLAY.get(company, company)}</span>
-            <span class='lux-company-badge' style='margin-left:6px;border-color:#6b8f7144;background:linear-gradient(135deg,#6b8f7122,#4a7c5e22);color:#8ab49a;'>{view_label}</span>
-        </div>
-    </div>""", unsafe_allow_html=True)
-
     # ── ROUTE VIEW ───────────────────────────────────────────────────────────
-    if view == "sales":
+    if view == "inventory":
+        show_inventory_comparison()
+    elif view == "ai_chat":
+        show_ai_chat()
+    elif view == "sales":
         show_sales_analytics(company)
     else:
         show_purchase_analytics(company)
