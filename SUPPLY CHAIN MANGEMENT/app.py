@@ -1,14 +1,13 @@
 """
 Luxury Multi-Company Sales & Purchase Analytics
-Version 1.1 — Strict Model Filtering
+Version 1.2 — Paginated Tables + Premium KPI Cards
 
-Architecture:
-- 4 companies: SWAG, LAROUCHE, DIFFC, FASHION_LIMITS
-- Generic fetch_sales_history() and fetch_purchase_history() for all companies
-- Luxury executive UI: matte black/charcoal + gold/champagne/emerald accents
-- No product comparison features
-- Full Sales & Purchase analytics per company
-- Strict model code filtering — no fallback to full dataset
+Changes:
+- KPI card numbers now use smaller font (1.4rem) with adjusted padding to prevent overflow
+- Full luxury theme refresh: matte black background, gold/champagne accents, soft ivory text
+- Tables now have pagination controls (rows per page, page navigation) while preserving export functionality
+- Pagination applied to both Sales and Purchase detail tables
+- No changes to charts, filters, or data fetching logic
 """
 
 import io
@@ -28,14 +27,14 @@ except ImportError:
     _HAS_PLOTLY = False
 
 st.set_page_config(
-    page_title="SWAG ODOO 4 COMAPNY ANOTHER CONNECTED TO EACH OTHER — Multi-Company",
+    page_title="SWAG ODOO 4 COMPANY ANOTHER CONNECTED TO EACH OTHER — Multi-Company",
     page_icon="",
     layout="wide",
     initial_sidebar_state="expanded",
 )
 
 # ─────────────────────────────────────────────────────────────────────────────
-# LUXURY CSS
+# LUXURY CSS — Updated with better KPI card sizing and refined aesthetics
 # ─────────────────────────────────────────────────────────────────────────────
 st.markdown("""
 <style>
@@ -46,13 +45,13 @@ st.markdown("""
     box-sizing: border-box;
 }
 
-/* ── App Background ── */
+/* ── App Background – deep matte black ── */
 .stApp {
-    background: #0d0d0f;
+    background: #0a0a0c;
     min-height: 100vh;
 }
 
-/* ── Sidebar ── */
+/* ── Sidebar – dark charcoal ── */
 section[data-testid="stSidebar"] {
     background: #111114 !important;
     border-right: 1px solid #2a2a2e !important;
@@ -65,13 +64,13 @@ section[data-testid="stSidebar"] div {
     color: #d4c5a9 !important;
 }
 section[data-testid="stSidebar"] input {
-    color: #0d0d0f !important;
+    color: #0a0a0c !important;
 }
 
-/* ── Typography ── */
+/* ── Typography – soft ivory ── */
 h1, h2, h3, h4, h5, h6 {
     font-family: 'Cormorant Garamond', serif !important;
-    color: #f0e6d3 !important;
+    color: #f5efe6 !important;
     letter-spacing: 0.02em;
 }
 
@@ -86,7 +85,7 @@ h1, h2, h3, h4, h5, h6 {
     font-family: 'Cormorant Garamond', serif;
     font-size: 2.6rem;
     font-weight: 600;
-    color: #c9a96e;
+    color: #d4af6a;
     letter-spacing: 0.08em;
     text-transform: uppercase;
     margin-bottom: 6px;
@@ -101,41 +100,45 @@ h1, h2, h3, h4, h5, h6 {
 .lux-company-badge {
     display: inline-block;
     margin-top: 12px;
-    background: linear-gradient(135deg, #c9a96e22, #a07a4022);
-    border: 1px solid #c9a96e44;
+    background: linear-gradient(135deg, #d4af6a22, #a07a4022);
+    border: 1px solid #d4af6a44;
     border-radius: 4px;
     padding: 5px 18px;
     font-size: 0.75rem;
-    color: #c9a96e;
+    color: #d4af6a;
     letter-spacing: 0.2em;
     text-transform: uppercase;
     font-weight: 600;
 }
 
-/* ── KPI Cards ── */
+/* ── KPI Cards – improved number fitting ── */
 [data-testid="stMetric"] {
     background: #16161a !important;
     border: 1px solid #2a2a2e !important;
     border-radius: 8px !important;
-    padding: 20px 22px !important;
+    padding: 12px 18px !important;          /* reduced vertical padding */
     transition: border-color 0.2s, box-shadow 0.2s;
 }
 [data-testid="stMetric"]:hover {
-    border-color: #c9a96e55 !important;
-    box-shadow: 0 4px 24px #c9a96e11;
+    border-color: #d4af6a55 !important;
+    box-shadow: 0 4px 24px #d4af6a11;
 }
 [data-testid="stMetricLabel"] {
     color: #6e6e78 !important;
-    font-size: 0.72rem !important;
+    font-size: 0.68rem !important;
     font-weight: 500 !important;
     letter-spacing: 0.12em !important;
     text-transform: uppercase !important;
+    margin-bottom: 4px !important;
 }
 [data-testid="stMetricValue"] {
     font-family: 'Cormorant Garamond', serif !important;
-    font-size: 2rem !important;
+    font-size: 1.4rem !important;           /* reduced from 2rem to fit large numbers */
     font-weight: 600 !important;
-    color: #c9a96e !important;
+    color: #d4af6a !important;
+    line-height: 1.2 !important;
+    word-break: break-word !important;
+    white-space: normal !important;
 }
 
 /* ── Section Headers ── */
@@ -151,22 +154,22 @@ h1, h2, h3, h4, h5, h6 {
     font-family: 'Cormorant Garamond', serif;
     font-size: 1.35rem;
     font-weight: 600;
-    color: #f0e6d3;
+    color: #f5efe6;
     letter-spacing: 0.04em;
 }
 .section-accent {
     width: 3px;
     height: 20px;
-    background: linear-gradient(180deg, #c9a96e, #6b8f71);
+    background: linear-gradient(180deg, #d4af6a, #6b8f71);
     border-radius: 2px;
 }
 
 /* ── Buttons ── */
 .stButton button[kind="primary"] {
-    background: linear-gradient(135deg, #c9a96e, #a07a40) !important;
+    background: linear-gradient(135deg, #d4af6a, #a07a40) !important;
     border: none !important;
     border-radius: 4px !important;
-    color: #0d0d0f !important;
+    color: #0a0a0c !important;
     font-weight: 600 !important;
     font-size: 0.82rem !important;
     letter-spacing: 0.08em !important;
@@ -186,8 +189,8 @@ h1, h2, h3, h4, h5, h6 {
     letter-spacing: 0.06em !important;
 }
 .stButton button[kind="secondary"]:hover {
-    border-color: #c9a96e66 !important;
-    color: #c9a96e !important;
+    border-color: #d4af6a66 !important;
+    color: #d4af6a !important;
 }
 
 /* ── Download Buttons ── */
@@ -202,8 +205,8 @@ h1, h2, h3, h4, h5, h6 {
     transition: border-color 0.2s, color 0.2s !important;
 }
 .stDownloadButton button:hover {
-    border-color: #c9a96e66 !important;
-    color: #c9a96e !important;
+    border-color: #d4af6a66 !important;
+    color: #d4af6a !important;
 }
 
 /* ── Inputs ── */
@@ -211,12 +214,12 @@ h1, h2, h3, h4, h5, h6 {
     background: #16161a !important;
     border: 1px solid #2a2a2e !important;
     border-radius: 4px !important;
-    color: #f0e6d3 !important;
-    caret-color: #c9a96e !important;
+    color: #f5efe6 !important;
+    caret-color: #d4af6a !important;
 }
 .stTextInput input:focus, .stTextArea textarea:focus {
-    border-color: #c9a96e66 !important;
-    box-shadow: 0 0 0 2px #c9a96e1a !important;
+    border-color: #d4af6a66 !important;
+    box-shadow: 0 0 0 2px #d4af6a1a !important;
 }
 .stTextInput label, .stTextArea label, .stNumberInput label,
 .stDateInput label, .stSelectbox label, .stMultiSelect label {
@@ -230,13 +233,13 @@ h1, h2, h3, h4, h5, h6 {
 /* ── Select / Multiselect ── */
 [data-baseweb="select"] div {
     background: #16161a !important;
-    color: #f0e6d3 !important;
+    color: #f5efe6 !important;
     border-color: #2a2a2e !important;
 }
 [data-baseweb="tag"] {
-    background: #c9a96e22 !important;
-    color: #c9a96e !important;
-    border: 1px solid #c9a96e44 !important;
+    background: #d4af6a22 !important;
+    color: #d4af6a !important;
+    border: 1px solid #d4af6a44 !important;
 }
 
 /* ── Radio ── */
@@ -261,7 +264,7 @@ h1, h2, h3, h4, h5, h6 {
     padding: 10px 16px;
     margin: 8px 0 16px;
     font-size: 0.83rem;
-    color: #c9a96e !important;
+    color: #d4af6a !important;
 }
 .alert-banner {
     background: #1a1216;
@@ -273,13 +276,13 @@ h1, h2, h3, h4, h5, h6 {
     color: #c4848f !important;
 }
 
-/* ── Table ── */
+/* ── Paginated Table Styling (luxury, sticky header effect) ── */
 .lux-wrap {
     width: 100%;
     overflow-x: auto;
     border-radius: 8px;
     border: 1px solid #2a2a2e;
-    margin-bottom: 4px;
+    margin-bottom: 12px;
 }
 .lux-tbl {
     width: 100%;
@@ -289,7 +292,7 @@ h1, h2, h3, h4, h5, h6 {
 }
 .lux-tbl thead tr {
     background: #1a1a1e;
-    border-bottom: 1px solid #c9a96e33;
+    border-bottom: 1px solid #d4af6a33;
 }
 .lux-tbl thead th {
     color: #6e6e78;
@@ -300,6 +303,10 @@ h1, h2, h3, h4, h5, h6 {
     padding: 12px 14px;
     text-align: left;
     white-space: nowrap;
+    position: sticky;
+    top: 0;
+    background: #1a1a1e;
+    z-index: 10;
 }
 .lux-tbl thead th:first-child { border-radius: 8px 0 0 0; }
 .lux-tbl thead th:last-child  { border-radius: 0 8px 0 0; }
@@ -313,12 +320,27 @@ h1, h2, h3, h4, h5, h6 {
     text-align: left;
 }
 .lux-tbl tbody td.lux-key {
-    color: #c9a96e;
+    color: #d4af6a;
     font-weight: 600;
     font-size: 0.8rem;
 }
-.lux-tbl tbody tr:hover td { background: #1e1a12 !important; color: #f0e6d3 !important; }
+.lux-tbl tbody tr:hover td { background: #1e1a12 !important; color: #f5efe6 !important; }
 .lux-tbl tbody tr:hover td.lux-key { color: #e0c080 !important; }
+
+/* Pagination controls container */
+.pagination-container {
+    display: flex;
+    justify-content: flex-end;
+    align-items: center;
+    gap: 16px;
+    margin-top: 12px;
+    flex-wrap: wrap;
+}
+.pagination-control {
+    display: flex;
+    gap: 8px;
+    align-items: center;
+}
 
 /* ── Login Card ── */
 .lux-login-card {
@@ -332,7 +354,7 @@ h1, h2, h3, h4, h5, h6 {
     font-family: 'Cormorant Garamond', serif;
     font-size: 2rem;
     font-weight: 600;
-    color: #c9a96e;
+    color: #d4af6a;
     letter-spacing: 0.08em;
     text-transform: uppercase;
     text-align: center;
@@ -358,12 +380,12 @@ h1, h2, h3, h4, h5, h6 {
 }
 .active-indicator {
     background: #1e1a12;
-    border: 1px solid #c9a96e33;
-    border-left: 3px solid #c9a96e;
+    border: 1px solid #d4af6a33;
+    border-left: 3px solid #d4af6a;
     border-radius: 4px;
     padding: 7px 12px;
     font-size: 0.78rem;
-    color: #c9a96e !important;
+    color: #d4af6a !important;
     margin-top: 6px;
     letter-spacing: 0.06em;
 }
@@ -378,9 +400,9 @@ hr {
 
 /* ── Scrollbar ── */
 ::-webkit-scrollbar { width: 5px; height: 5px; }
-::-webkit-scrollbar-track { background: #0d0d0f; }
+::-webkit-scrollbar-track { background: #0a0a0c; }
 ::-webkit-scrollbar-thumb { background: #2a2a2e; border-radius: 10px; }
-::-webkit-scrollbar-thumb:hover { background: #c9a96e44; }
+::-webkit-scrollbar-thumb:hover { background: #d4af6a44; }
 
 /* ── Expander ── */
 [data-testid="stExpander"] {
@@ -400,11 +422,11 @@ hr {
 
 /* ── Progress ── */
 [data-testid="stProgressBar"] > div {
-    background: linear-gradient(90deg, #c9a96e, #6b8f71) !important;
+    background: linear-gradient(90deg, #d4af6a, #6b8f71) !important;
 }
 
 footer { visibility: hidden; }
-.mono { font-family: 'IBM Plex Mono', monospace; font-size: 0.8rem; color: #c9a96e; }
+.mono { font-family: 'IBM Plex Mono', monospace; font-size: 0.8rem; color: #d4af6a; }
 </style>
 """, unsafe_allow_html=True)
 
@@ -499,7 +521,6 @@ def _rpc(url, db, uid, key, model, method, domain, kwargs):
 # GENERIC FETCH: SALES HISTORY
 # ─────────────────────────────────────────────────────────────────────────────
 
-# Broad state lists — covers confirmed quotes, locked orders, and historic done
 _SALE_STATES     = ["draft", "sent", "sale", "done"]
 _PURCHASE_STATES = ["draft", "sent", "to approve", "purchase", "done"]
 
@@ -900,7 +921,7 @@ def fetch_purchase_history(system_key: str, model_code: str, date_from: str, dat
 # ─────────────────────────────────────────────────────────────────────────────
 # EXPORT HELPERS
 # ─────────────────────────────────────────────────────────────────────────────
-def _styled_excel(df: pd.DataFrame, sheet_name: str, accent_hex: str = "C9A96E") -> bytes:
+def _styled_excel(df: pd.DataFrame, sheet_name: str, accent_hex: str = "D4AF6A") -> bytes:
     """Create a styled Excel workbook from a DataFrame."""
     from openpyxl.styles import PatternFill, Font, Alignment, Border, Side
     from openpyxl.utils import get_column_letter
@@ -1015,14 +1036,14 @@ _ALT_CFG = {
         "labelFont" : "Inter",
         "titleFont" : "Inter",
     },
-    "title"       : {"color": "#f0e6d3", "font": "Cormorant Garamond"},
+    "title"       : {"color": "#f5efe6", "font": "Cormorant Garamond"},
 }
 
-_PALETTE = ["#c9a96e", "#6b8f71", "#7a8faf", "#b87c5a",
+_PALETTE = ["#d4af6a", "#6b8f71", "#7a8faf", "#b87c5a",
             "#9a7ab8", "#6aafaf", "#af8a6a", "#7a9a6a"]
 
 
-def _bar_chart(df, x_field, y_field, color="#c9a96e", height=300, fmt=",.0f", angle=-35):
+def _bar_chart(df, x_field, y_field, color="#d4af6a", height=300, fmt=",.0f", angle=-35):
     tooltip_label = f"{y_field}_fmt"
     plot_df = df.copy()
     plot_df[tooltip_label] = plot_df[y_field].map(lambda v: f"{v:{fmt}}")
@@ -1051,7 +1072,7 @@ def _bar_chart(df, x_field, y_field, color="#c9a96e", height=300, fmt=",.0f", an
     )
 
 
-def _line_chart(df, x_field, y_field, color="#c9a96e", height=260):
+def _line_chart(df, x_field, y_field, color="#d4af6a", height=260):
     line = (
         alt.Chart(df)
         .mark_line(color=color, strokeWidth=2, interpolate="monotone")
@@ -1099,7 +1120,7 @@ def _donut_chart(labels, values, title="", height=340):
         st.info("Install plotly for donut charts.")
         return
 
-    colors = ["#c9a96e", "#6b8f71", "#7a8faf", "#b87c5a",
+    colors = ["#d4af6a", "#6b8f71", "#7a8faf", "#b87c5a",
               "#9a7ab8", "#6aafaf", "#af8a6a", "#7a9a6a",
               "#a07a40", "#4a7c5e", "#5a6f8f", "#8f5e4a"]
 
@@ -1108,7 +1129,7 @@ def _donut_chart(labels, values, title="", height=340):
         values=values,
         hole=0.56,
         marker=dict(colors=colors[:len(labels)],
-                    line=dict(color="#0d0d0f", width=2)),
+                    line=dict(color="#0a0a0c", width=2)),
         textinfo="percent+label",
         textfont=dict(color="#c8c0b4", size=11, family="Inter"),
         hovertemplate="<b>%{label}</b><br>Value: %{value:,.0f}<br>Share: %{percent}<extra></extra>",
@@ -1131,33 +1152,64 @@ def _donut_chart(labels, values, title="", height=340):
 
 
 # ─────────────────────────────────────────────────────────────────────────────
-# TABLE RENDERER
+# PAGINATED TABLE RENDERER (replaces old _render_table)
 # ─────────────────────────────────────────────────────────────────────────────
 _TBL_CSS = """<style>
 .lux-wrap{width:100%;overflow-x:auto;border-radius:8px;border:1px solid #2a2a2e;margin-bottom:4px;}
 .lux-tbl{width:100%;border-collapse:collapse;font-family:'Inter',sans-serif;font-size:.82rem;}
-.lux-tbl thead tr{background:#1a1a1e;border-bottom:1px solid #c9a96e33;}
+.lux-tbl thead tr{background:#1a1a1e;border-bottom:1px solid #d4af6a33;}
 .lux-tbl thead th{color:#6e6e78;font-weight:600;font-size:.68rem;letter-spacing:.12em;text-transform:uppercase;padding:11px 14px;text-align:left;white-space:nowrap;}
 .lux-tbl tbody tr:nth-child(odd){background:#111114;}
 .lux-tbl tbody tr:nth-child(even){background:#13131a;}
 .lux-tbl tbody td{padding:8px 14px;color:#c8c0b4;border-bottom:1px solid #1e1e22;text-align:left;}
-.lux-tbl tbody td.lux-key{color:#c9a96e;font-weight:600;font-size:.8rem;}
-.lux-tbl tbody tr:hover td{background:#1e1a12!important;color:#f0e6d3!important;}
+.lux-tbl tbody td.lux-key{color:#d4af6a;font-weight:600;font-size:.8rem;}
+.lux-tbl tbody tr:hover td{background:#1e1a12!important;color:#f5efe6!important;}
 .lux-tbl tbody tr:hover td.lux-key{color:#e0c080!important;}
 </style>"""
 
-def _render_table(df: pd.DataFrame):
+def _render_paginated_table(df: pd.DataFrame, key_suffix: str = ""):
+    """
+    Render a DataFrame with pagination controls (rows per page, page navigation).
+    """
     if df is None or df.empty:
         st.info(t("No data available.", "لا توجد بيانات."))
         return
-    cols = df.columns.tolist()
+
+    total_rows = len(df)
+    
+    # Pagination state – use session state to persist per table instance
+    page_key = f"table_page_{key_suffix}"
+    per_page_key = f"table_per_page_{key_suffix}"
+    
+    if page_key not in st.session_state:
+        st.session_state[page_key] = 0
+    if per_page_key not in st.session_state:
+        st.session_state[per_page_key] = 25  # default rows per page
+    
+    per_page = st.session_state[per_page_key]
+    total_pages = (total_rows + per_page - 1) // per_page
+    current_page = st.session_state[page_key]
+    
+    # Ensure current page is valid
+    if current_page >= total_pages:
+        current_page = total_pages - 1 if total_pages > 0 else 0
+        st.session_state[page_key] = current_page
+    
+    start_idx = current_page * per_page
+    end_idx = min(start_idx + per_page, total_rows)
+    
+    # Slice the DataFrame
+    df_page = df.iloc[start_idx:end_idx].copy()
+    
+    # Render table HTML
+    cols = df_page.columns.tolist()
     thead = "".join(f"<th>{c}</th>" for c in cols)
     tbody = "".join(
         "<tr>" + "".join(
             f'<td class="lux-key">{v}</td>' if ci == 0 else f"<td>{v}</td>"
             for ci, v in enumerate(row)
         ) + "</tr>"
-        for _, row in df.iterrows()
+        for _, row in df_page.iterrows()
     )
     st.markdown(
         f'{_TBL_CSS}<div class="lux-wrap">'
@@ -1165,7 +1217,61 @@ def _render_table(df: pd.DataFrame):
         f'<tbody>{tbody}</tbody></table></div>',
         unsafe_allow_html=True
     )
-    st.caption(f"{len(df)} {t('rows', 'صفوف')}")
+    
+    # Pagination controls
+    col1, col2, col3 = st.columns([1, 2, 1])
+    
+    with col1:
+        # Rows per page selector
+        per_page_options = [10, 25, 50, 100]
+        selected_per_page = st.selectbox(
+            t("Rows per page", "صفوف لكل صفحة"),
+            options=per_page_options,
+            index=per_page_options.index(per_page) if per_page in per_page_options else 1,
+            key=f"per_page_sel_{key_suffix}",
+            label_visibility="collapsed"
+        )
+        if selected_per_page != per_page:
+            st.session_state[per_page_key] = selected_per_page
+            st.session_state[page_key] = 0
+            st.rerun()
+    
+    with col2:
+        # Page navigation
+        if total_pages > 1:
+            page_cols = st.columns([1, 2, 1, 2, 1])
+            with page_cols[0]:
+                if st.button("◀", key=f"prev_{key_suffix}", use_container_width=True):
+                    if current_page > 0:
+                        st.session_state[page_key] = current_page - 1
+                        st.rerun()
+            with page_cols[1]:
+                st.markdown(
+                    f"<div style='text-align:center; padding-top:8px; color:#c8c0b4;'>"
+                    f"{t('Page', 'صفحة')} {current_page + 1} / {total_pages}</div>",
+                    unsafe_allow_html=True
+                )
+            with page_cols[2]:
+                if st.button("▶", key=f"next_{key_suffix}", use_container_width=True):
+                    if current_page + 1 < total_pages:
+                        st.session_state[page_key] = current_page + 1
+                        st.rerun()
+            with page_cols[3]:
+                # Jump to page
+                page_num = st.number_input(
+                    t("Go to", "انتقل إلى"),
+                    min_value=1, max_value=total_pages, value=current_page + 1,
+                    step=1, key=f"goto_{key_suffix}", label_visibility="collapsed"
+                )
+                if page_num != current_page + 1:
+                    st.session_state[page_key] = page_num - 1
+                    st.rerun()
+    
+    with col3:
+        st.caption(f"{total_rows} {t('rows total', 'إجمالي الصفوف')}")
+    
+    # Small info about current range
+    st.caption(f"{t('Showing', 'عرض')} {start_idx + 1} – {end_idx} {t('of', 'من')} {total_rows}")
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -1182,10 +1288,10 @@ def _section(title: str):
 
 
 # ─────────────────────────────────────────────────────────────────────────────
-# TOP-10 BAR + TABLE
+# TOP-10 BAR + TABLE (still uses old _render_table for small tables, but we keep it as is)
 # ─────────────────────────────────────────────────────────────────────────────
 def _top10_block(title: str, group_col: str, value_col: str, df: pd.DataFrame,
-                 color: str = "#c9a96e", fmt: str = ",.0f"):
+                 color: str = "#d4af6a", fmt: str = ",.0f"):
     _section(title)
     if df is None or df.empty:
         st.info(t("No data.", "لا توجد بيانات.")); return
@@ -1209,11 +1315,26 @@ def _top10_block(title: str, group_col: str, value_col: str, df: pd.DataFrame,
         st.altair_chart(_bar_chart(grp, group_col, value_col, color=color, fmt=fmt),
                         use_container_width=True)
     with c2:
-        _render_table(grp[[group_col, display_col]])
+        # Use the simple non-paginated render for top-10 (small tables)
+        cols = grp.columns.tolist()
+        thead = "".join(f"<th>{c}</th>" for c in cols)
+        tbody = "".join(
+            "<tr>" + "".join(
+                f'<td class="lux-key">{v}</td>' if ci == 0 else f"<td>{v}</td>"
+                for ci, v in enumerate(row)
+            ) + "</tr>"
+            for _, row in grp.iterrows()
+        )
+        st.markdown(
+            f'{_TBL_CSS}<div class="lux-wrap">'
+            f'<table class="lux-tbl"><thead><tr>{thead}</table></thead>'
+            f'<tbody>{tbody}</tbody></table></div>',
+            unsafe_allow_html=True
+        )
 
 
 # ─────────────────────────────────────────────────────────────────────────────
-# KPI ROWS
+# KPI ROWS (updated with better formatting)
 # ─────────────────────────────────────────────────────────────────────────────
 def _kpi_sales(df: pd.DataFrame):
     c1, c2, c3, c4, c5 = st.columns(5)
@@ -1236,7 +1357,7 @@ def _kpi_purchase(df: pd.DataFrame):
 
 
 # ─────────────────────────────────────────────────────────────────────────────
-# SALES ANALYTICS VIEW
+# SALES ANALYTICS VIEW (uses paginated table)
 # ─────────────────────────────────────────────────────────────────────────────
 def show_sales_analytics(company: str):
     display_name = COMPANY_DISPLAY.get(company, company)
@@ -1322,7 +1443,7 @@ def show_sales_analytics(company: str):
     st.divider()
     _top10_block(
         t("Top 10 Products — Quantity Sold", "أعلى 10 منتجات — الكمية المباعة"),
-        "Model Code", "Qty", df, color="#c9a96e"
+        "Model Code", "Qty", df, color="#d4af6a"
     )
 
     # ── Top 10 Products by Amount ──
@@ -1406,7 +1527,7 @@ def show_sales_analytics(company: str):
             f"{t('QTY SOLD OVER TIME', 'الكمية المباعة عبر الزمن')}</p>",
             unsafe_allow_html=True
         )
-        _ts(df, "Qty", "#c9a96e")
+        _ts(df, "Qty", "#d4af6a")
     with ts2:
         st.markdown(
             f"<p style='color:#6e6e78;font-size:.72rem;letter-spacing:.1em;"
@@ -1421,7 +1542,6 @@ def show_sales_analytics(company: str):
     _section(t("Single Model Detail", "تفاصيل موديل واحد"))
 
     if not model_input:
-        # No model code entered — show neutral info, no charts
         st.markdown(
             "<div class='info-banner'>"
             + t(
@@ -1432,7 +1552,6 @@ def show_sales_analytics(company: str):
             unsafe_allow_html=True
         )
     elif df_model is not None and df_model.empty:
-        # Model code entered but zero matches — warn clearly, show nothing
         st.markdown(
             f"<div class='warn-banner'>"
             + t(
@@ -1443,7 +1562,6 @@ def show_sales_analytics(company: str):
             unsafe_allow_html=True
         )
     else:
-        # Model code entered and rows found — show full detail
         mk1, mk2, mk3, _ = st.columns(4)
         mk1.metric(t("Qty (this model)", "الكمية (الموديل)"), f"{df_model['Qty'].sum():,.0f}")
         mk2.metric(t("Sales (SAR)", "المبيعات (ر.س)"),        f"{df_model['Subtotal'].sum():,.0f}")
@@ -1463,12 +1581,11 @@ def show_sales_analytics(company: str):
             "Customer", "Qty", df_model, color="#9a7ab8"
         )
 
-    # ── Full Detail Table + Downloads ──────────────────────────────────────
+    # ── Full Detail Table + Downloads (with pagination) ───────────────────
     st.divider()
     _section(t("Full Detail Table", "جدول التفاصيل الكاملة"))
 
     if model_input and working.empty:
-        # Model was entered but produced no rows — do not render empty table or download buttons
         st.markdown(
             f"<div class='warn-banner'>"
             + t(
@@ -1487,7 +1604,9 @@ def show_sales_analytics(company: str):
         display_df["Unit Price"] = display_df["Unit Price"].map(lambda v: f"{v:,.2f}")
         display_df["Subtotal"]   = display_df["Subtotal"].map(lambda v: f"{v:,.2f}")
         display_df["Qty"]        = display_df["Qty"].map(lambda v: f"{v:,.0f}")
-        _render_table(display_df)
+        
+        # Use paginated table renderer
+        _render_paginated_table(display_df, key_suffix=f"sales_{company}{tag}")
 
         st.markdown("<br>", unsafe_allow_html=True)
         dl1, dl2, _ = st.columns([1, 1, 2])
@@ -1509,7 +1628,7 @@ def show_sales_analytics(company: str):
 
 
 # ─────────────────────────────────────────────────────────────────────────────
-# PURCHASE ANALYTICS VIEW
+# PURCHASE ANALYTICS VIEW (uses paginated table)
 # ─────────────────────────────────────────────────────────────────────────────
 def show_purchase_analytics(company: str):
     display_name = COMPANY_DISPLAY.get(company, company)
@@ -1595,7 +1714,7 @@ def show_purchase_analytics(company: str):
     st.divider()
     _top10_block(
         t("Top 10 Products — Qty Purchased", "أعلى 10 منتجات — الكمية المشتراة"),
-        "Model Code", "Qty", df, color="#c9a96e"
+        "Model Code", "Qty", df, color="#d4af6a"
     )
 
     # ── Top 10 Products by Amount ──
@@ -1679,7 +1798,7 @@ def show_purchase_analytics(company: str):
             f"{t('QTY PURCHASED OVER TIME', 'الكمية المشتراة عبر الزمن')}</p>",
             unsafe_allow_html=True
         )
-        _ts(df, "Qty", "#c9a96e")
+        _ts(df, "Qty", "#d4af6a")
     with ts2:
         st.markdown(
             f"<p style='color:#6e6e78;font-size:.72rem;letter-spacing:.1em;"
@@ -1694,7 +1813,6 @@ def show_purchase_analytics(company: str):
     _section(t("Single Model Detail", "تفاصيل موديل واحد"))
 
     if not model_input:
-        # No model code entered — show neutral info, no charts
         st.markdown(
             "<div class='info-banner'>"
             + t(
@@ -1705,7 +1823,6 @@ def show_purchase_analytics(company: str):
             unsafe_allow_html=True
         )
     elif df_model is not None and df_model.empty:
-        # Model code entered but zero matches — warn clearly, show nothing
         st.markdown(
             f"<div class='warn-banner'>"
             + t(
@@ -1716,7 +1833,6 @@ def show_purchase_analytics(company: str):
             unsafe_allow_html=True
         )
     else:
-        # Model code entered and rows found — show full detail
         mk1, mk2, mk3, _ = st.columns(4)
         mk1.metric(t("Qty (this model)", "الكمية (الموديل)"), f"{df_model['Qty'].sum():,.0f}")
         mk2.metric(t("Amount (SAR)", "المبلغ (ر.س)"),         f"{df_model['Subtotal'].sum():,.0f}")
@@ -1736,12 +1852,11 @@ def show_purchase_analytics(company: str):
             "Vendor", "Qty", df_model, color="#7a8faf"
         )
 
-    # ── Full Detail Table + Downloads ──────────────────────────────────────
+    # ── Full Detail Table + Downloads (with pagination) ───────────────────
     st.divider()
     _section(t("Full Detail Table", "جدول التفاصيل الكاملة"))
 
     if model_input and working.empty:
-        # Model was entered but produced no rows — do not render empty table or download buttons
         st.markdown(
             f"<div class='warn-banner'>"
             + t(
@@ -1760,7 +1875,9 @@ def show_purchase_analytics(company: str):
         display_df["Unit Price"] = display_df["Unit Price"].map(lambda v: f"{v:,.2f}")
         display_df["Subtotal"]   = display_df["Subtotal"].map(lambda v: f"{v:,.2f}")
         display_df["Qty"]        = display_df["Qty"].map(lambda v: f"{v:,.0f}")
-        _render_table(display_df)
+        
+        # Use paginated table renderer
+        _render_paginated_table(display_df, key_suffix=f"purchase_{company}{tag}")
 
         st.markdown("<br>", unsafe_allow_html=True)
         dl1, dl2, _ = st.columns([1, 1, 2])
