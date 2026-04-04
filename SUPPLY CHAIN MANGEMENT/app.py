@@ -1,16 +1,13 @@
 """
 Luxury Multi-Company Sales & Purchase Analytics
-Version 1.4 — Integrated AI Chat Assistant
+Version 1.3 — Added Branch-wise Purchase Analytics
 
 Changes:
-- Added "AI Chat" module in sidebar
-- Premium chat UI (dark, matches dashboard theme)
-- Context‑aware responses using current dataframe and filters
-- Quick action buttons: Summarize, Top products, Top vendors/customers, Branch summary, Diagnose
-- Session state for chat history
-- Helper function to build context summary
-- Rule‑based AI (easy to replace with real LLM later)
-- Explanation of how to embed the same chat into an external website
+- Added branch field to purchase data fetch (warehouse/picking type detection)
+- Added Branch KPI (Active Branches)
+- Added Top 3 Branches by Purchase Amount (bar chart + table)
+- Added Branch Share donut chart in Share Analysis section
+- Paginated tables, premium KPI cards, luxury theme preserved
 """
 
 import io
@@ -18,7 +15,6 @@ import hashlib
 import time
 import xmlrpc.client
 from datetime import datetime, timedelta
-import random  # for demo responses; replace with real AI later
 
 import altair as alt
 import pandas as pd
@@ -38,7 +34,7 @@ st.set_page_config(
 )
 
 # ─────────────────────────────────────────────────────────────────────────────
-# LUXURY CSS — Updated with chat styling
+# LUXURY CSS — Updated with better KPI card sizing and refined aesthetics
 # ─────────────────────────────────────────────────────────────────────────────
 st.markdown("""
 <style>
@@ -280,7 +276,7 @@ h1, h2, h3, h4, h5, h6 {
     color: #c4848f !important;
 }
 
-/* ── Paginated Table Styling ── */
+/* ── Paginated Table Styling (luxury, sticky header effect) ── */
 .lux-wrap {
     width: 100%;
     overflow-x: auto;
@@ -344,93 +340,6 @@ h1, h2, h3, h4, h5, h6 {
     display: flex;
     gap: 8px;
     align-items: center;
-}
-
-/* ── Chat UI ── */
-.chat-container {
-    background: #111114;
-    border: 1px solid #2a2a2e;
-    border-radius: 12px;
-    padding: 20px;
-    margin-bottom: 20px;
-    height: 500px;
-    overflow-y: auto;
-    display: flex;
-    flex-direction: column;
-    gap: 16px;
-}
-.chat-message {
-    display: flex;
-    gap: 12px;
-    animation: fadeInUp 0.3s ease;
-}
-.chat-message.user {
-    justify-content: flex-end;
-}
-.chat-message.assistant {
-    justify-content: flex-start;
-}
-.chat-bubble {
-    max-width: 70%;
-    padding: 12px 18px;
-    border-radius: 18px;
-    font-size: 0.85rem;
-    line-height: 1.4;
-}
-.chat-bubble.user {
-    background: linear-gradient(135deg, #d4af6a, #a07a40);
-    color: #0a0a0c;
-    border-bottom-right-radius: 4px;
-}
-.chat-bubble.assistant {
-    background: #1a1a1e;
-    border: 1px solid #2a2a2e;
-    color: #c8c0b4;
-    border-bottom-left-radius: 4px;
-}
-.chat-input-area {
-    background: #16161a;
-    border: 1px solid #2a2a2e;
-    border-radius: 8px;
-    padding: 8px;
-    display: flex;
-    gap: 8px;
-}
-.chat-input {
-    flex: 1;
-    background: transparent !important;
-    border: none !important;
-    color: #f5efe6 !important;
-    padding: 8px 12px;
-}
-.chat-input:focus {
-    outline: none;
-}
-.chat-send-btn {
-    background: #d4af6a !important;
-    border: none !important;
-    color: #0a0a0c !important;
-    font-weight: 600 !important;
-    padding: 8px 20px !important;
-    border-radius: 6px !important;
-}
-.quick-actions {
-    display: flex;
-    flex-wrap: wrap;
-    gap: 8px;
-    margin-bottom: 16px;
-}
-.quick-btn {
-    background: #1a1a1e !important;
-    border: 1px solid #2a2a2e !important;
-    color: #d4af6a !important;
-    font-size: 0.7rem !important;
-    padding: 4px 12px !important;
-    border-radius: 20px !important;
-}
-.quick-btn:hover {
-    background: #d4af6a22 !important;
-    border-color: #d4af6a66 !important;
 }
 
 /* ── Login Card ── */
@@ -561,7 +470,6 @@ _DEFAULTS = {
     "purchase_df"      : None,
     "sales_company"    : None,
     "purchase_company" : None,
-    "chat_history"     : [],            # list of {"role": "user"|"assistant", "content": str}
 }
 for _k, _v in _DEFAULTS.items():
     if _k not in st.session_state:
@@ -1494,7 +1402,7 @@ def _top10_block(title: str, group_col: str, value_col: str, df: pd.DataFrame,
         st.markdown(
             f'{_TBL_CSS}<div class="lux-wrap">'
             f'<table class="lux-tbl"><thead><tr>{thead} hilab</thead>'
-            f'<tbody>{tbody}</tbody></tr></div>',
+            f'<tbody>{tbody}</tbody></table></div>',
             unsafe_allow_html=True
         )
 
@@ -1557,7 +1465,7 @@ def _top3_branches_block(title: str, df: pd.DataFrame, color: str = "#d4af6a"):
             "<tr>" + "".join(
                 f'<td class="lux-key">{v}</td>' if ci == 0 else f"<td>{v}</td>"
                 for ci, v in enumerate(row)
-            ) + "<tr>"
+            ) + "</tr>"
             for _, row in display_df.iterrows()
         )
         st.markdown(
@@ -1596,242 +1504,6 @@ def _kpi_purchase(df: pd.DataFrame):
         c6.metric(t("Active Branches", "الفروع النشطة"),   f"{active_branches:,}")
     else:
         c6.metric(t("Active Branches", "الفروع النشطة"),   "N/A")
-
-
-# ─────────────────────────────────────────────────────────────────────────────
-# AI CHAT ASSISTANT
-# ─────────────────────────────────────────────────────────────────────────────
-def _get_current_context_summary() -> str:
-    """
-    Build a textual summary of the current dashboard context (company, view, filters, data).
-    Used by the AI to answer questions.
-    """
-    company = st.session_state.get("selected_company", "SWAG")
-    view = st.session_state.get("analytics_view", "sales")
-    
-    # Get current dataframe
-    df = None
-    if view == "sales":
-        df = st.session_state.get("sales_df")
-        if df is not None and st.session_state.get("sales_company") != company:
-            df = None
-    else:
-        df = st.session_state.get("purchase_df")
-        if df is not None and st.session_state.get("purchase_company") != company:
-            df = None
-    
-    # Build filter info
-    filter_info = []
-    # We cannot easily retrieve the exact filter values from the analytics pages,
-    # but we can extract them from the session state if stored there.
-    # For simplicity, we'll ask the user to refer to the visible filters.
-    # In a real implementation, you would store filter values in session state.
-    
-    summary = f"**Company:** {COMPANY_DISPLAY.get(company, company)}\n"
-    summary += f"**Analytics Type:** {view.upper()}\n"
-    
-    if df is None or df.empty:
-        summary += "**Data:** No data loaded. Please fetch data using the Fetch button on the analytics page.\n"
-        return summary
-    
-    summary += f"**Data rows:** {len(df):,}\n"
-    summary += f"**Date range:** {df['Date'].min()} → {df['Date'].max()}\n"
-    
-    if view == "sales":
-        summary += f"**Total Sales:** {df['Subtotal'].sum():,.0f} SAR\n"
-        summary += f"**Total Qty Sold:** {df['Qty'].sum():,.0f}\n"
-        summary += f"**Unique Customers:** {df['Customer'].nunique():,}\n"
-        summary += f"**Unique Products:** {df['Model Code'].nunique():,}\n"
-    else:
-        summary += f"**Total Purchases:** {df['Subtotal'].sum():,.0f} SAR\n"
-        summary += f"**Total Qty Purchased:** {df['Qty'].sum():,.0f}\n"
-        summary += f"**Unique Vendors:** {df['Vendor'].nunique():,}\n"
-        summary += f"**Unique Products:** {df['Model Code'].nunique():,}\n"
-        if "Branch" in df.columns:
-            summary += f"**Active Branches:** {df['Branch'].nunique():,}\n"
-    
-    return summary
-
-
-def _ai_respond(user_message: str, context_summary: str, df: pd.DataFrame, view: str) -> str:
-    """
-    Generate an AI response based on the user message and current context.
-    This is a rule‑based implementation. Replace with a real LLM (OpenAI, Anthropic, etc.) later.
-    """
-    msg_lower = user_message.lower()
-    
-    # If no data is loaded
-    if df is None or df.empty:
-        return "No data is currently loaded. Please go to the analytics page, set your filters, and click the **Fetch** button. Then I can answer questions about your data."
-    
-    # Common questions
-    if "total" in msg_lower and ("purchase" in msg_lower or "spent" in msg_lower):
-        total = df['Subtotal'].sum()
-        return f"Total purchase amount: **{total:,.0f} SAR**."
-    
-    if "total" in msg_lower and ("sale" in msg_lower or "revenue" in msg_lower):
-        total = df['Subtotal'].sum()
-        return f"Total sales revenue: **{total:,.0f} SAR**."
-    
-    if "top 5 vendors" in msg_lower or "top vendors" in msg_lower:
-        if view == "purchase" and "Vendor" in df.columns:
-            top = df.groupby("Vendor")["Subtotal"].sum().sort_values(ascending=False).head(5)
-            lines = "\n".join([f"- {vendor}: {amt:,.0f} SAR" for vendor, amt in top.items()])
-            return f"Top 5 vendors by purchase amount:\n{lines}"
-        else:
-            return "You are currently in Sales view. Please switch to Purchase view to see vendor analytics."
-    
-    if "top 5 customers" in msg_lower or "top customers" in msg_lower:
-        if view == "sales" and "Customer" in df.columns:
-            top = df.groupby("Customer")["Subtotal"].sum().sort_values(ascending=False).head(5)
-            lines = "\n".join([f"- {cust}: {amt:,.0f} SAR" for cust, amt in top.items()])
-            return f"Top 5 customers by sales amount:\n{lines}"
-        else:
-            return "You are currently in Purchase view. Please switch to Sales view to see customer analytics."
-    
-    if "top 3 products" in msg_lower:
-        top = df.groupby("Model Code")["Qty"].sum().sort_values(ascending=False).head(3)
-        if top.empty:
-            return "No product data available."
-        lines = "\n".join([f"- {code}: {qty:,.0f} units" for code, qty in top.items()])
-        return f"Top 3 products by quantity { 'sold' if view == 'sales' else 'purchased' }:\n{lines}"
-    
-    if "branch" in msg_lower and ("purchased" in msg_lower or "most" in msg_lower):
-        if view == "purchase" and "Branch" in df.columns:
-            top = df.groupby("Branch")["Subtotal"].sum().sort_values(ascending=False).head(1)
-            if not top.empty:
-                branch, amt = top.iloc[0]
-                return f"The branch that purchased the most is **{branch}** with **{amt:,.0f} SAR**."
-            else:
-                return "No branch data available."
-        else:
-            return "Branch analytics are only available in Purchase view and require branch data in your Odoo system."
-    
-    if "summary" in msg_lower or "current filters" in msg_lower:
-        return context_summary
-    
-    if "why" in msg_lower and "no data" in msg_lower:
-        return "There could be several reasons: no purchase/sale orders in the selected date range, the model code filter is too strict, or the Odoo credentials are incorrect. Please check your filters and ensure data exists for the selected company and period."
-    
-    # Default fallback
-    return "I can help you with questions about totals, top vendors/customers, top products, branch analysis, and summaries. Try asking something like: 'What is total purchase?', 'Top 5 vendors', or 'Show me summary of current data'."
-
-
-def show_ai_chat():
-    st.markdown(
-        f"<div class='lux-header'>"
-        f"<div class='lux-title'>AI Chat Assistant</div>"
-        f"<div class='lux-subtitle'>Ask questions about your data · Context‑aware · Premium Intelligence</div>"
-        f"</div>",
-        unsafe_allow_html=True
-    )
-    
-    # Quick action buttons
-    st.markdown("<div class='quick-actions'>", unsafe_allow_html=True)
-    col_q1, col_q2, col_q3, col_q4, col_q5 = st.columns(5)
-    with col_q1:
-        if st.button("📊 Summarize", key="qa_summary", use_container_width=True):
-            context = _get_current_context_summary()
-            df = None
-            view = st.session_state.get("analytics_view", "sales")
-            if view == "sales":
-                df = st.session_state.get("sales_df")
-            else:
-                df = st.session_state.get("purchase_df")
-            response = _ai_respond("summary", context, df, view)
-            st.session_state.chat_history.append({"role": "assistant", "content": response})
-            st.rerun()
-    with col_q2:
-        if st.button("🏆 Top Products", key="qa_top_products", use_container_width=True):
-            context = _get_current_context_summary()
-            view = st.session_state.get("analytics_view", "sales")
-            df = st.session_state.get("sales_df") if view == "sales" else st.session_state.get("purchase_df")
-            response = _ai_respond("top 3 products", context, df, view)
-            st.session_state.chat_history.append({"role": "assistant", "content": response})
-            st.rerun()
-    with col_q3:
-        if st.button("🏭 Top Vendors/Customers", key="qa_top_vendors", use_container_width=True):
-            context = _get_current_context_summary()
-            view = st.session_state.get("analytics_view", "sales")
-            df = st.session_state.get("sales_df") if view == "sales" else st.session_state.get("purchase_df")
-            if view == "sales":
-                response = _ai_respond("top 5 customers", context, df, view)
-            else:
-                response = _ai_respond("top 5 vendors", context, df, view)
-            st.session_state.chat_history.append({"role": "assistant", "content": response})
-            st.rerun()
-    with col_q4:
-        if st.button("🏪 Branch Summary", key="qa_branch", use_container_width=True):
-            context = _get_current_context_summary()
-            view = st.session_state.get("analytics_view", "sales")
-            df = st.session_state.get("purchase_df") if view == "purchase" else None
-            response = _ai_respond("branch purchased the most", context, df, view)
-            st.session_state.chat_history.append({"role": "assistant", "content": response})
-            st.rerun()
-    with col_q5:
-        if st.button("🔍 Diagnose", key="qa_diagnose", use_container_width=True):
-            context = _get_current_context_summary()
-            view = st.session_state.get("analytics_view", "sales")
-            df = st.session_state.get("sales_df") if view == "sales" else st.session_state.get("purchase_df")
-            response = _ai_respond("why no data", context, df, view)
-            st.session_state.chat_history.append({"role": "assistant", "content": response})
-            st.rerun()
-    st.markdown("</div>", unsafe_allow_html=True)
-    
-    # Chat history display
-    chat_container = st.container()
-    with chat_container:
-        st.markdown("<div class='chat-container'>", unsafe_allow_html=True)
-        for msg in st.session_state.chat_history:
-            if msg["role"] == "user":
-                st.markdown(
-                    f"<div class='chat-message user'>"
-                    f"<div class='chat-bubble user'>{msg['content']}</div>"
-                    f"</div>",
-                    unsafe_allow_html=True
-                )
-            else:
-                st.markdown(
-                    f"<div class='chat-message assistant'>"
-                    f"<div class='chat-bubble assistant'>{msg['content']}</div>"
-                    f"</div>",
-                    unsafe_allow_html=True
-                )
-        st.markdown("</div>", unsafe_allow_html=True)
-    
-    # Chat input
-    with st.form(key="chat_form", clear_on_submit=True):
-        col_input, col_button = st.columns([5, 1])
-        with col_input:
-            user_input = st.text_input(
-                "Ask me anything about your data...",
-                key="chat_input",
-                label_visibility="collapsed",
-                placeholder="e.g., What is total purchase in this date range? Top 5 vendors?"
-            )
-        with col_button:
-            send_button = st.form_submit_button("Send", type="primary", use_container_width=True)
-        
-        if send_button and user_input.strip():
-            # Add user message to history
-            st.session_state.chat_history.append({"role": "user", "content": user_input})
-            
-            # Get context and generate response
-            context = _get_current_context_summary()
-            view = st.session_state.get("analytics_view", "sales")
-            df = None
-            if view == "sales":
-                df = st.session_state.get("sales_df")
-                if df is not None and st.session_state.get("sales_company") != st.session_state.get("selected_company"):
-                    df = None
-            else:
-                df = st.session_state.get("purchase_df")
-                if df is not None and st.session_state.get("purchase_company") != st.session_state.get("selected_company"):
-                    df = None
-            
-            response = _ai_respond(user_input, context, df, view)
-            st.session_state.chat_history.append({"role": "assistant", "content": response})
-            st.rerun()
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -2545,24 +2217,12 @@ def show_dashboard():
                 st.session_state.analytics_view = "purchase"
                 st.rerun()
 
-        # AI Chat button (new)
-        st.divider()
-        st.markdown(f"<span class='nav-company-label'>{t('ASSISTANT', 'المساعد')}</span>",
-                    unsafe_allow_html=True)
-        if st.button(t("💬 AI Chat", "💬 الدردشة الذكية"), type="secondary",
-                     use_container_width=True, key="nav_ai_chat"):
-            st.session_state.analytics_view = "ai_chat"
-            st.rerun()
-
-        # Active indicator (shows current module)
-        if st.session_state.get("analytics_view") == "ai_chat":
-            indicator_text = "◆ AI Chat Assistant"
-        else:
-            indicator_text = (
-                f"◆ {company_labels[selected]} — {t('Sales', 'المبيعات')}"
-                if view == "sales"
-                else f"◆ {company_labels[selected]} — {t('Purchase', 'المشتريات')}"
-            )
+        # Active indicator
+        indicator_text = (
+            f"◆ {company_labels[selected]} — {t('Sales', 'المبيعات')}"
+            if view == "sales"
+            else f"◆ {company_labels[selected]} — {t('Purchase', 'المشتريات')}"
+        )
         st.markdown(f"<div class='active-indicator'>{indicator_text}</div>",
                     unsafe_allow_html=True)
 
@@ -2576,11 +2236,22 @@ def show_dashboard():
         if st.button(t("Sign Out", "تسجيل الخروج"), use_container_width=True, key="logout_btn"):
             do_logout()
 
+    # ── MAIN HEADER ──────────────────────────────────────────────────────────
+    view_label = t("Sales Analytics", "تحليلات المبيعات") if view == "sales" \
+        else t("Purchase Analytics", "تحليلات المشتريات")
+
+    st.markdown(f"""
+    <div class='lux-header'>
+        <div class='lux-title'>SWAG MULTI DASBOARD WITH 4 COMPANY </div>
+        <div class='lux-subtitle'>{t('Sales & Purchase Intelligence · 4 Companies', 'ذكاء المبيعات والمشتريات · 4 شركات')}</div>
+        <div>
+            <span class='lux-company-badge'>{COMPANY_DISPLAY.get(company, company)}</span>
+            <span class='lux-company-badge' style='margin-left:6px;border-color:#6b8f7144;background:linear-gradient(135deg,#6b8f7122,#4a7c5e22);color:#8ab49a;'>{view_label}</span>
+        </div>
+    </div>""", unsafe_allow_html=True)
+
     # ── ROUTE VIEW ───────────────────────────────────────────────────────────
-    current_view = st.session_state.get("analytics_view", "sales")
-    if current_view == "ai_chat":
-        show_ai_chat()
-    elif current_view == "sales":
+    if view == "sales":
         show_sales_analytics(company)
     else:
         show_purchase_analytics(company)
