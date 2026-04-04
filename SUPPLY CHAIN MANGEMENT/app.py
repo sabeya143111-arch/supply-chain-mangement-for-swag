@@ -1,6 +1,6 @@
 """
 Luxury Multi-Company Sales & Purchase Analytics
-Version 1.0 — Complete Refactor
+Version 1.1 — Strict Model Filtering
 
 Architecture:
 - 4 companies: SWAG, LAROUCHE, DIFFC, FASHION_LIMITS
@@ -8,6 +8,7 @@ Architecture:
 - Luxury executive UI: matte black/charcoal + gold/champagne/emerald accents
 - No product comparison features
 - Full Sales & Purchase analytics per company
+- Strict model code filtering — no fallback to full dataset
 """
 
 import io
@@ -499,7 +500,7 @@ def _rpc(url, db, uid, key, model, method, domain, kwargs):
 # ─────────────────────────────────────────────────────────────────────────────
 
 # Broad state lists — covers confirmed quotes, locked orders, and historic done
-_SALE_STATES    = ["draft", "sent", "sale", "done"]
+_SALE_STATES     = ["draft", "sent", "sale", "done"]
 _PURCHASE_STATES = ["draft", "sent", "to approve", "purchase", "done"]
 
 
@@ -550,7 +551,7 @@ def fetch_sales_history(system_key: str, model_code: str, date_from: str, date_t
     u, db, ak = cfg["url"], cfg["db"], cfg["api_key"]
 
     # ── 3. Build domain ──────────────────────────────────────────────────────
-    mc_clean = str(model_code).strip() if model_code else ""
+    mc_clean = str(model_code).strip().upper() if model_code else ""
 
     domain = [
         ["order_id.state", "in", _SALE_STATES],
@@ -598,7 +599,6 @@ def fetch_sales_history(system_key: str, model_code: str, date_from: str, date_t
                 + (f" with model `{mc_clean}`." if mc_clean else ".")
             )
             st.code(f"Domain used:\n{domain}", language="python")
-        # fallback_count == -1 means fallback itself errored; ignore silently
         return empty
 
     # ── 5. Fetch related orders and products ─────────────────────────────────
@@ -630,7 +630,6 @@ def fetch_sales_history(system_key: str, model_code: str, date_from: str, date_t
                               "limit": len(tmpl_ids) + 10})
                 tmpl_map = {tmpl_["id"]: tmpl_ for tmpl_ in tmpls}
             except Exception as exc:
-                # x_brand_category_id may not exist on all Odoo instances — non-fatal
                 st.warning(
                     f"⚠️ Could not fetch `x_brand_category_id` for **{system_key}** "
                     f"(field may not exist): `{exc}`. Brand Category will be empty."
@@ -750,7 +749,7 @@ def fetch_purchase_history(system_key: str, model_code: str, date_from: str, dat
     u, db, ak = cfg["url"], cfg["db"], cfg["api_key"]
 
     # ── 3. Build domain ──────────────────────────────────────────────────────
-    mc_clean = str(model_code).strip() if model_code else ""
+    mc_clean = str(model_code).strip().upper() if model_code else ""
 
     domain = [
         ["order_id.state", "in", _PURCHASE_STATES],
@@ -773,7 +772,6 @@ def fetch_purchase_history(system_key: str, model_code: str, date_from: str, dat
         return empty
 
     if not lines:
-        # Diagnostic: try without the state filter to check if records exist at all
         try:
             domain_no_state = [c for c in domain if c[0] != "order_id.state"]
             fallback = _rpc(u, db, uid, ak, "purchase.order.line", "search_read",
@@ -830,7 +828,6 @@ def fetch_purchase_history(system_key: str, model_code: str, date_from: str, dat
                               "limit": len(tmpl_ids) + 10})
                 tmpl_map = {tmpl_["id"]: tmpl_ for tmpl_ in tmpls}
             except Exception as exc:
-                # x_brand_category_id may not exist on all Odoo instances — non-fatal
                 st.warning(
                     f"⚠️ Could not fetch `x_brand_category_id` for **{system_key}** "
                     f"(field may not exist): `{exc}`. Brand Category will be empty."
@@ -1280,12 +1277,11 @@ def show_sales_analytics(company: str):
         t("◆  Fetch Sales Data", "◆  جلب بيانات المبيعات"),
         type="primary", key=f"fetch_sales_{company}"
     ):
-        # Clear cache so a new date range / model always hits Odoo fresh
         fetch_sales_history.clear()
         with st.spinner(t("Retrieving data…", "جارٍ جلب البيانات…")):
             fetched = fetch_sales_history(
                 system_key=company,
-                model_code=model_input,          # ← pass actual UI input, not ""
+                model_code=model_input,
                 date_from=date_from.strftime("%Y-%m-%d"),
                 date_to=date_to.strftime("%Y-%m-%d"),
             )
@@ -1303,14 +1299,21 @@ def show_sales_analytics(company: str):
     if df_full.empty:
         st.info(t("No sales found for this period.", "لا توجد مبيعات لهذه الفترة.")); return
 
-    # Apply filters locally
+    # ── Apply filters locally ──────────────────────────────────────────────
     df = df_full.copy()
     if customer_sel:
         df = df[df["Customer"].isin(customer_sel)]
-    df_model = df[df["Model Code"].str.upper() == model_input.upper()].copy() if model_input else None
-    working  = df_model if (df_model is not None and not df_model.empty) else df
 
-    # ── KPIs ──
+    # Strict model filtering — no fallback to full dataset
+    if model_input:
+        mc_norm  = model_input.strip().upper()
+        df_model = df[df["Model Code"].str.strip().str.upper() == mc_norm].copy()
+        working  = df_model          # strict: stays empty if no match
+    else:
+        df_model = None
+        working  = df
+
+    # ── KPIs (always from full filtered df, not model-narrowed) ───────────
     st.divider()
     _section(t("Key Performance Indicators", "مؤشرات الأداء الرئيسية"))
     _kpi_sales(df)
@@ -1397,25 +1400,50 @@ def show_sales_analytics(company: str):
             st.info(t("No time data.", "لا توجد بيانات زمنية."))
 
     with ts1:
-        st.markdown(f"<p style='color:#6e6e78;font-size:.72rem;letter-spacing:.1em;text-transform:uppercase;margin-bottom:6px'>{t('QTY SOLD OVER TIME','الكمية المباعة عبر الزمن')}</p>", unsafe_allow_html=True)
+        st.markdown(
+            f"<p style='color:#6e6e78;font-size:.72rem;letter-spacing:.1em;"
+            f"text-transform:uppercase;margin-bottom:6px'>"
+            f"{t('QTY SOLD OVER TIME', 'الكمية المباعة عبر الزمن')}</p>",
+            unsafe_allow_html=True
+        )
         _ts(df, "Qty", "#c9a96e")
     with ts2:
-        st.markdown(f"<p style='color:#6e6e78;font-size:.72rem;letter-spacing:.1em;text-transform:uppercase;margin-bottom:6px'>{t('SALES AMOUNT OVER TIME','مبلغ المبيعات عبر الزمن')}</p>", unsafe_allow_html=True)
+        st.markdown(
+            f"<p style='color:#6e6e78;font-size:.72rem;letter-spacing:.1em;"
+            f"text-transform:uppercase;margin-bottom:6px'>"
+            f"{t('SALES AMOUNT OVER TIME', 'مبلغ المبيعات عبر الزمن')}</p>",
+            unsafe_allow_html=True
+        )
         _ts(df, "Subtotal", "#6b8f71")
 
-    # ── Single Model Detail ──
+    # ── Single Model Detail ────────────────────────────────────────────────
     st.divider()
     _section(t("Single Model Detail", "تفاصيل موديل واحد"))
 
     if not model_input:
-        st.info(t(
-            "Enter a Model Code in the filter above to see per-model analytics.",
-            "أدخل رمز الموديل في الفلتر أعلاه لعرض تحليلات الموديل."
-        ))
-    elif df_model is None or df_model.empty:
-        st.warning(t(f"No sales found for model '{model_input}'.",
-                     f"لا توجد مبيعات للموديل '{model_input}'."))
+        # No model code entered — show neutral info, no charts
+        st.markdown(
+            "<div class='info-banner'>"
+            + t(
+                "Enter a Model Code in the filter above to see single-model analytics.",
+                "أدخل رمز الموديل في الفلتر أعلاه لعرض تحليلات الموديل."
+            )
+            + "</div>",
+            unsafe_allow_html=True
+        )
+    elif df_model is not None and df_model.empty:
+        # Model code entered but zero matches — warn clearly, show nothing
+        st.markdown(
+            f"<div class='warn-banner'>"
+            + t(
+                f"No data found for model: <strong>{model_input.strip().upper()}</strong>",
+                f"لا توجد بيانات للموديل: <strong>{model_input.strip().upper()}</strong>"
+            )
+            + "</div>",
+            unsafe_allow_html=True
+        )
     else:
+        # Model code entered and rows found — show full detail
         mk1, mk2, mk3, _ = st.columns(4)
         mk1.metric(t("Qty (this model)", "الكمية (الموديل)"), f"{df_model['Qty'].sum():,.0f}")
         mk2.metric(t("Sales (SAR)", "المبيعات (ر.س)"),        f"{df_model['Subtotal'].sum():,.0f}")
@@ -1435,35 +1463,49 @@ def show_sales_analytics(company: str):
             "Customer", "Qty", df_model, color="#9a7ab8"
         )
 
-    # ── Full Table + Downloads ──
+    # ── Full Detail Table + Downloads ──────────────────────────────────────
     st.divider()
     _section(t("Full Detail Table", "جدول التفاصيل الكاملة"))
 
-    export_df  = working.copy()
-    display_df = export_df.copy()
-    display_df["Unit Price"] = display_df["Unit Price"].map(lambda v: f"{v:,.2f}")
-    display_df["Subtotal"]   = display_df["Subtotal"].map(lambda v: f"{v:,.2f}")
-    display_df["Qty"]        = display_df["Qty"].map(lambda v: f"{v:,.0f}")
-    _render_table(display_df)
+    if model_input and working.empty:
+        # Model was entered but produced no rows — do not render empty table or download buttons
+        st.markdown(
+            f"<div class='warn-banner'>"
+            + t(
+                f"No records to display — model <strong>{model_input.strip().upper()}</strong> "
+                f"was not found in this dataset.",
+                f"لا توجد سجلات للعرض — الموديل <strong>{model_input.strip().upper()}</strong> "
+                f"غير موجود في هذه البيانات."
+            )
+            + "</div>",
+            unsafe_allow_html=True
+        )
+    else:
+        tag        = f"_{model_input.strip().upper()}" if model_input else ""
+        export_df  = working.copy()
+        display_df = export_df.copy()
+        display_df["Unit Price"] = display_df["Unit Price"].map(lambda v: f"{v:,.2f}")
+        display_df["Subtotal"]   = display_df["Subtotal"].map(lambda v: f"{v:,.2f}")
+        display_df["Qty"]        = display_df["Qty"].map(lambda v: f"{v:,.0f}")
+        _render_table(display_df)
 
-    st.markdown("<br>", unsafe_allow_html=True)
-    tag = f"_{model_input.upper()}" if model_input else ""
-    dl1, dl2, _ = st.columns([1, 1, 2])
-    dl1.download_button(
-        t("⬇  CSV Export", "⬇  تصدير CSV"),
-        export_df.to_csv(index=False).encode("utf-8-sig"),
-        dl_filename(company, f"sales{tag}", "csv"),
-        "text/csv", use_container_width=True,
-        key=f"dl_sales_csv_{company}{tag}"
-    )
-    dl2.download_button(
-        t("⬇  Excel Export", "⬇  تصدير Excel"),
-        _styled_excel(export_df, "Sales Data"),
-        dl_filename(company, f"sales{tag}", "xlsx"),
-        "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-        use_container_width=True,
-        key=f"dl_sales_xlsx_{company}{tag}"
-    )
+        st.markdown("<br>", unsafe_allow_html=True)
+        dl1, dl2, _ = st.columns([1, 1, 2])
+        dl1.download_button(
+            t("⬇  CSV Export", "⬇  تصدير CSV"),
+            export_df.to_csv(index=False).encode("utf-8-sig"),
+            dl_filename(company, f"sales{tag}", "csv"),
+            "text/csv", use_container_width=True,
+            key=f"dl_sales_csv_{company}{tag}"
+        )
+        dl2.download_button(
+            t("⬇  Excel Export", "⬇  تصدير Excel"),
+            _styled_excel(export_df, "Sales Data"),
+            dl_filename(company, f"sales{tag}", "xlsx"),
+            "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+            use_container_width=True,
+            key=f"dl_sales_xlsx_{company}{tag}"
+        )
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -1508,12 +1550,11 @@ def show_purchase_analytics(company: str):
         t("◆  Fetch Purchase Data", "◆  جلب بيانات المشتريات"),
         type="primary", key=f"fetch_purch_{company}"
     ):
-        # Clear cache so a new date range / model always hits Odoo fresh
         fetch_purchase_history.clear()
         with st.spinner(t("Retrieving data…", "جارٍ جلب البيانات…")):
             fetched = fetch_purchase_history(
                 system_key=company,
-                model_code=model_input,          # ← pass actual UI input, not ""
+                model_code=model_input,
                 date_from=date_from.strftime("%Y-%m-%d"),
                 date_to=date_to.strftime("%Y-%m-%d"),
             )
@@ -1531,14 +1572,21 @@ def show_purchase_analytics(company: str):
     if df_full.empty:
         st.info(t("No purchases found for this period.", "لا توجد مشتريات لهذه الفترة.")); return
 
-    # Apply filters locally
+    # ── Apply filters locally ──────────────────────────────────────────────
     df = df_full.copy()
     if vendor_sel:
         df = df[df["Vendor"].isin(vendor_sel)]
-    df_model = df[df["Model Code"].str.upper() == model_input.upper()].copy() if model_input else None
-    working  = df_model if (df_model is not None and not df_model.empty) else df
 
-    # ── KPIs ──
+    # Strict model filtering — no fallback to full dataset
+    if model_input:
+        mc_norm  = model_input.strip().upper()
+        df_model = df[df["Model Code"].str.strip().str.upper() == mc_norm].copy()
+        working  = df_model          # strict: stays empty if no match
+    else:
+        df_model = None
+        working  = df
+
+    # ── KPIs (always from full filtered df, not model-narrowed) ───────────
     st.divider()
     _section(t("Key Performance Indicators", "مؤشرات الأداء الرئيسية"))
     _kpi_purchase(df)
@@ -1625,25 +1673,50 @@ def show_purchase_analytics(company: str):
             st.info(t("No time data.", "لا توجد بيانات زمنية."))
 
     with ts1:
-        st.markdown(f"<p style='color:#6e6e78;font-size:.72rem;letter-spacing:.1em;text-transform:uppercase;margin-bottom:6px'>{t('QTY PURCHASED OVER TIME','الكمية المشتراة عبر الزمن')}</p>", unsafe_allow_html=True)
+        st.markdown(
+            f"<p style='color:#6e6e78;font-size:.72rem;letter-spacing:.1em;"
+            f"text-transform:uppercase;margin-bottom:6px'>"
+            f"{t('QTY PURCHASED OVER TIME', 'الكمية المشتراة عبر الزمن')}</p>",
+            unsafe_allow_html=True
+        )
         _ts(df, "Qty", "#c9a96e")
     with ts2:
-        st.markdown(f"<p style='color:#6e6e78;font-size:.72rem;letter-spacing:.1em;text-transform:uppercase;margin-bottom:6px'>{t('PURCHASE AMOUNT OVER TIME','مبلغ المشتريات عبر الزمن')}</p>", unsafe_allow_html=True)
+        st.markdown(
+            f"<p style='color:#6e6e78;font-size:.72rem;letter-spacing:.1em;"
+            f"text-transform:uppercase;margin-bottom:6px'>"
+            f"{t('PURCHASE AMOUNT OVER TIME', 'مبلغ المشتريات عبر الزمن')}</p>",
+            unsafe_allow_html=True
+        )
         _ts(df, "Subtotal", "#6b8f71")
 
-    # ── Single Model Detail ──
+    # ── Single Model Detail ────────────────────────────────────────────────
     st.divider()
     _section(t("Single Model Detail", "تفاصيل موديل واحد"))
 
     if not model_input:
-        st.info(t(
-            "Enter a Model Code in the filter above to see per-model analytics.",
-            "أدخل رمز الموديل في الفلتر أعلاه لعرض تحليلات الموديل."
-        ))
-    elif df_model is None or df_model.empty:
-        st.warning(t(f"No purchases found for model '{model_input}'.",
-                     f"لا توجد مشتريات للموديل '{model_input}'."))
+        # No model code entered — show neutral info, no charts
+        st.markdown(
+            "<div class='info-banner'>"
+            + t(
+                "Enter a Model Code in the filter above to see single-model analytics.",
+                "أدخل رمز الموديل في الفلتر أعلاه لعرض تحليلات الموديل."
+            )
+            + "</div>",
+            unsafe_allow_html=True
+        )
+    elif df_model is not None and df_model.empty:
+        # Model code entered but zero matches — warn clearly, show nothing
+        st.markdown(
+            f"<div class='warn-banner'>"
+            + t(
+                f"No data found for model: <strong>{model_input.strip().upper()}</strong>",
+                f"لا توجد بيانات للموديل: <strong>{model_input.strip().upper()}</strong>"
+            )
+            + "</div>",
+            unsafe_allow_html=True
+        )
     else:
+        # Model code entered and rows found — show full detail
         mk1, mk2, mk3, _ = st.columns(4)
         mk1.metric(t("Qty (this model)", "الكمية (الموديل)"), f"{df_model['Qty'].sum():,.0f}")
         mk2.metric(t("Amount (SAR)", "المبلغ (ر.س)"),         f"{df_model['Subtotal'].sum():,.0f}")
@@ -1663,35 +1736,49 @@ def show_purchase_analytics(company: str):
             "Vendor", "Qty", df_model, color="#7a8faf"
         )
 
-    # ── Full Table + Downloads ──
+    # ── Full Detail Table + Downloads ──────────────────────────────────────
     st.divider()
     _section(t("Full Detail Table", "جدول التفاصيل الكاملة"))
 
-    export_df  = working.copy()
-    display_df = export_df.copy()
-    display_df["Unit Price"] = display_df["Unit Price"].map(lambda v: f"{v:,.2f}")
-    display_df["Subtotal"]   = display_df["Subtotal"].map(lambda v: f"{v:,.2f}")
-    display_df["Qty"]        = display_df["Qty"].map(lambda v: f"{v:,.0f}")
-    _render_table(display_df)
+    if model_input and working.empty:
+        # Model was entered but produced no rows — do not render empty table or download buttons
+        st.markdown(
+            f"<div class='warn-banner'>"
+            + t(
+                f"No records to display — model <strong>{model_input.strip().upper()}</strong> "
+                f"was not found in this dataset.",
+                f"لا توجد سجلات للعرض — الموديل <strong>{model_input.strip().upper()}</strong> "
+                f"غير موجود في هذه البيانات."
+            )
+            + "</div>",
+            unsafe_allow_html=True
+        )
+    else:
+        tag        = f"_{model_input.strip().upper()}" if model_input else ""
+        export_df  = working.copy()
+        display_df = export_df.copy()
+        display_df["Unit Price"] = display_df["Unit Price"].map(lambda v: f"{v:,.2f}")
+        display_df["Subtotal"]   = display_df["Subtotal"].map(lambda v: f"{v:,.2f}")
+        display_df["Qty"]        = display_df["Qty"].map(lambda v: f"{v:,.0f}")
+        _render_table(display_df)
 
-    st.markdown("<br>", unsafe_allow_html=True)
-    tag = f"_{model_input.upper()}" if model_input else ""
-    dl1, dl2, _ = st.columns([1, 1, 2])
-    dl1.download_button(
-        t("⬇  CSV Export", "⬇  تصدير CSV"),
-        export_df.to_csv(index=False).encode("utf-8-sig"),
-        dl_filename(company, f"purchase{tag}", "csv"),
-        "text/csv", use_container_width=True,
-        key=f"dl_purch_csv_{company}{tag}"
-    )
-    dl2.download_button(
-        t("⬇  Excel Export", "⬇  تصدير Excel"),
-        _styled_excel(export_df, "Purchase Data"),
-        dl_filename(company, f"purchase{tag}", "xlsx"),
-        "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-        use_container_width=True,
-        key=f"dl_purch_xlsx_{company}{tag}"
-    )
+        st.markdown("<br>", unsafe_allow_html=True)
+        dl1, dl2, _ = st.columns([1, 1, 2])
+        dl1.download_button(
+            t("⬇  CSV Export", "⬇  تصدير CSV"),
+            export_df.to_csv(index=False).encode("utf-8-sig"),
+            dl_filename(company, f"purchase{tag}", "csv"),
+            "text/csv", use_container_width=True,
+            key=f"dl_purch_csv_{company}{tag}"
+        )
+        dl2.download_button(
+            t("⬇  Excel Export", "⬇  تصدير Excel"),
+            _styled_excel(export_df, "Purchase Data"),
+            dl_filename(company, f"purchase{tag}", "xlsx"),
+            "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+            use_container_width=True,
+            key=f"dl_purch_xlsx_{company}{tag}"
+        )
 
 
 # ─────────────────────────────────────────────────────────────────────────────
