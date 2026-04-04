@@ -1954,7 +1954,7 @@ def show_dashboard():
 
     st.markdown(f"""
     <div class='lux-header'>
-        <div class='lux-title'>Luxury Multi-Company Analytics</div>
+        <div class='lux-title'>SWAG MULTI DASBOARD WITH 4 COMPANY </div>
         <div class='lux-subtitle'>{t('Sales & Purchase Intelligence · 4 Companies', 'ذكاء المبيعات والمشتريات · 4 شركات')}</div>
         <div>
             <span class='lux-company-badge'>{COMPANY_DISPLAY.get(company, company)}</span>
