@@ -1,13 +1,13 @@
 """
 Luxury Multi-Company Sales & Purchase Analytics
-Version 1.2 — Paginated Tables + Premium KPI Cards
+Version 1.3 — Added Branch-wise Purchase Analytics
 
 Changes:
-- KPI card numbers now use smaller font (1.4rem) with adjusted padding to prevent overflow
-- Full luxury theme refresh: matte black background, gold/champagne accents, soft ivory text
-- Tables now have pagination controls (rows per page, page navigation) while preserving export functionality
-- Pagination applied to both Sales and Purchase detail tables
-- No changes to charts, filters, or data fetching logic
+- Added branch field to purchase data fetch (warehouse/picking type detection)
+- Added Branch KPI (Active Branches)
+- Added Top 3 Branches by Purchase Amount (bar chart + table)
+- Added Branch Share donut chart in Share Analysis section
+- Paginated tables, premium KPI cards, luxury theme preserved
 """
 
 import io
@@ -116,7 +116,7 @@ h1, h2, h3, h4, h5, h6 {
     background: #16161a !important;
     border: 1px solid #2a2a2e !important;
     border-radius: 8px !important;
-    padding: 12px 18px !important;          /* reduced vertical padding */
+    padding: 12px 18px !important;
     transition: border-color 0.2s, box-shadow 0.2s;
 }
 [data-testid="stMetric"]:hover {
@@ -133,7 +133,7 @@ h1, h2, h3, h4, h5, h6 {
 }
 [data-testid="stMetricValue"] {
     font-family: 'Cormorant Garamond', serif !important;
-    font-size: 1.4rem !important;           /* reduced from 2rem to fit large numbers */
+    font-size: 1.4rem !important;
     font-weight: 600 !important;
     color: #d4af6a !important;
     line-height: 1.2 !important;
@@ -721,12 +721,57 @@ def fetch_sales_history(system_key: str, model_code: str, date_from: str, date_t
 
 
 # ─────────────────────────────────────────────────────────────────────────────
-# GENERIC FETCH: PURCHASE HISTORY
+# GENERIC FETCH: PURCHASE HISTORY (with branch detection)
 # ─────────────────────────────────────────────────────────────────────────────
+def _get_branch_from_order(order, picking_type_map=None, warehouse_map=None, custom_branch_map=None):
+    """
+    Extract branch name from a purchase order dictionary.
+    Tries multiple fields in order: branch_id, x_branch_id, warehouse_id, picking_type_id, company_id.
+    Returns a string branch name or "Unknown Branch".
+    """
+    # 1. Try direct branch_id
+    if "branch_id" in order and order["branch_id"]:
+        if isinstance(order["branch_id"], list) and len(order["branch_id"]) > 1:
+            return str(order["branch_id"][1])
+        return str(order["branch_id"])
+    
+    # 2. Try custom x_branch_id
+    if "x_branch_id" in order and order["x_branch_id"]:
+        if isinstance(order["x_branch_id"], list) and len(order["x_branch_id"]) > 1:
+            return str(order["x_branch_id"][1])
+        return str(order["x_branch_id"])
+    
+    # 3. Try warehouse_id
+    if "warehouse_id" in order and order["warehouse_id"] and warehouse_map:
+        if isinstance(order["warehouse_id"], list) and len(order["warehouse_id"]) > 1:
+            wh_id = order["warehouse_id"][0]
+        else:
+            wh_id = order["warehouse_id"] if isinstance(order["warehouse_id"], int) else None
+        if wh_id and wh_id in warehouse_map:
+            return warehouse_map[wh_id]
+    
+    # 4. Try picking_type_id (could indicate branch)
+    if "picking_type_id" in order and order["picking_type_id"] and picking_type_map:
+        if isinstance(order["picking_type_id"], list) and len(order["picking_type_id"]) > 1:
+            pt_id = order["picking_type_id"][0]
+        else:
+            pt_id = order["picking_type_id"] if isinstance(order["picking_type_id"], int) else None
+        if pt_id and pt_id in picking_type_map:
+            return picking_type_map[pt_id]
+    
+    # 5. Try company_id as last resort
+    if "company_id" in order and order["company_id"]:
+        if isinstance(order["company_id"], list) and len(order["company_id"]) > 1:
+            return str(order["company_id"][1])
+        return str(order["company_id"])
+    
+    return "Unknown Branch"
+
+
 @st.cache_data(ttl=900, show_spinner=False)
 def fetch_purchase_history(system_key: str, model_code: str, date_from: str, date_to: str) -> pd.DataFrame:
     """
-    Fetch purchase order lines from any configured system.
+    Fetch purchase order lines from any configured system, including branch information.
 
     Args:
         system_key : one of SYSTEM_KEYS — key into st.secrets
@@ -737,10 +782,10 @@ def fetch_purchase_history(system_key: str, model_code: str, date_from: str, dat
     Returns:
         DataFrame with columns:
         Date, PO, Vendor, Brand Category, Category,
-        Model Code, Product, Qty, Unit Price, Subtotal
+        Model Code, Product, Qty, Unit Price, Subtotal, Branch
     """
     cols  = ["Date", "PO", "Vendor", "Brand Category", "Category",
-             "Model Code", "Product", "Qty", "Unit Price", "Subtotal"]
+             "Model Code", "Product", "Qty", "Unit Price", "Subtotal", "Branch"]
     empty = pd.DataFrame(columns=cols)
 
     # ── 1. Secrets check ────────────────────────────────────────────────────
@@ -820,16 +865,39 @@ def fetch_purchase_history(system_key: str, model_code: str, date_from: str, dat
             st.code(f"Domain used:\n{domain}", language="python")
         return empty
 
-    # ── 5. Fetch related orders and products ─────────────────────────────────
+    # ── 5. Fetch related orders, products, and branch-related data ───────────
     try:
         order_ids   = list({l["order_id"][0] for l in lines if isinstance(l.get("order_id"), list)})
         product_ids = list({l["product_id"][0] for l in lines if isinstance(l.get("product_id"), list)})
 
+        # Fetch purchase orders with additional fields for branch detection
         orders = _rpc(u, db, uid, ak, "purchase.order", "search_read",
                       [[["id", "in", order_ids]]],
-                      {"fields": ["id", "name", "partner_id", "date_order"],
+                      {"fields": ["id", "name", "partner_id", "date_order",
+                                  "branch_id", "x_branch_id", "warehouse_id", 
+                                  "picking_type_id", "company_id"],
                        "limit": len(order_ids) + 10})
         order_map = {o["id"]: o for o in orders}
+
+        # Fetch warehouses for mapping
+        warehouse_map = {}
+        try:
+            warehouses = _rpc(u, db, uid, ak, "stock.warehouse", "search_read",
+                              [[["active", "=", True]]],
+                              {"fields": ["id", "name"], "limit": 100})
+            warehouse_map = {w["id"]: w["name"] for w in warehouses}
+        except Exception:
+            pass  # Warehouse mapping optional
+
+        # Fetch picking types for mapping
+        picking_type_map = {}
+        try:
+            picking_types = _rpc(u, db, uid, ak, "stock.picking.type", "search_read",
+                                 [[["active", "=", True]]],
+                                 {"fields": ["id", "name"], "limit": 100})
+            picking_type_map = {pt["id"]: pt["name"] for pt in picking_types}
+        except Exception:
+            pass  # Picking type mapping optional
 
         products = _rpc(u, db, uid, ak, "product.product", "search_read",
                         [[["id", "in", product_ids]]],
@@ -859,7 +927,7 @@ def fetch_purchase_history(system_key: str, model_code: str, date_from: str, dat
         st.error(f"❌ RPC error fetching orders/products for **{system_key}**: `{exc}`")
         return empty
 
-    # ── 6. Build rows ────────────────────────────────────────────────────────
+    # ── 6. Build rows with branch information ────────────────────────────────
     rows = []
     for line in lines:
         oid = line["order_id"][0] if isinstance(line.get("order_id"), list) else None
@@ -891,6 +959,10 @@ def fetch_purchase_history(system_key: str, model_code: str, date_from: str, dat
 
         qty        = float(line.get("product_qty") or 0)
         unit_price = float(line.get("price_unit") or 0)
+        subtotal   = round(qty * unit_price, 2)
+
+        # Extract branch using helper
+        branch = _get_branch_from_order(order, picking_type_map, warehouse_map)
 
         rows.append({
             "Date"          : date_str,
@@ -902,7 +974,8 @@ def fetch_purchase_history(system_key: str, model_code: str, date_from: str, dat
             "Product"       : str(prod.get("display_name") or ""),
             "Qty"           : qty,
             "Unit Price"    : unit_price,
-            "Subtotal"      : round(qty * unit_price, 2),
+            "Subtotal"      : subtotal,
+            "Branch"        : branch,
         })
 
     if not rows:
@@ -913,8 +986,9 @@ def fetch_purchase_history(system_key: str, model_code: str, date_from: str, dat
         return empty
 
     df = pd.DataFrame(rows)
-    for col in ["Vendor", "Brand Category", "Category", "Model Code", "Product", "PO", "Date"]:
-        df[col] = df[col].fillna("").astype(str)
+    for col in ["Vendor", "Brand Category", "Category", "Model Code", "Product", "PO", "Date", "Branch"]:
+        if col in df.columns:
+            df[col] = df[col].fillna("").astype(str)
     return df.sort_values("Date", ascending=False).reset_index(drop=True)
 
 
@@ -1152,7 +1226,7 @@ def _donut_chart(labels, values, title="", height=340):
 
 
 # ─────────────────────────────────────────────────────────────────────────────
-# PAGINATED TABLE RENDERER (replaces old _render_table)
+# PAGINATED TABLE RENDERER
 # ─────────────────────────────────────────────────────────────────────────────
 _TBL_CSS = """<style>
 .lux-wrap{width:100%;overflow-x:auto;border-radius:8px;border:1px solid #2a2a2e;margin-bottom:4px;}
@@ -1213,7 +1287,7 @@ def _render_paginated_table(df: pd.DataFrame, key_suffix: str = ""):
     )
     st.markdown(
         f'{_TBL_CSS}<div class="lux-wrap">'
-        f'<table class="lux-tbl"><thead><tr>{thead}</tr></thead>'
+        f'<table class="lux-tbl"><thead><tr>{thead} hilab</thead>'
         f'<tbody>{tbody}</tbody></table></div>',
         unsafe_allow_html=True
     )
@@ -1288,7 +1362,7 @@ def _section(title: str):
 
 
 # ─────────────────────────────────────────────────────────────────────────────
-# TOP-10 BAR + TABLE (still uses old _render_table for small tables, but we keep it as is)
+# TOP-10 BAR + TABLE (for small tables, uses simple render)
 # ─────────────────────────────────────────────────────────────────────────────
 def _top10_block(title: str, group_col: str, value_col: str, df: pd.DataFrame,
                  color: str = "#d4af6a", fmt: str = ",.0f"):
@@ -1327,14 +1401,83 @@ def _top10_block(title: str, group_col: str, value_col: str, df: pd.DataFrame,
         )
         st.markdown(
             f'{_TBL_CSS}<div class="lux-wrap">'
-            f'<table class="lux-tbl"><thead><tr>{thead}</table></thead>'
+            f'<table class="lux-tbl"><thead><tr>{thead} hilab</thead>'
             f'<tbody>{tbody}</tbody></table></div>',
             unsafe_allow_html=True
         )
 
 
 # ─────────────────────────────────────────────────────────────────────────────
-# KPI ROWS (updated with better formatting)
+# TOP 3 BRANCHES BLOCK (horizontal bar + table)
+# ─────────────────────────────────────────────────────────────────────────────
+def _top3_branches_block(title: str, df: pd.DataFrame, color: str = "#d4af6a"):
+    """Display top 3 branches by purchase amount with horizontal bar chart and table."""
+    _section(title)
+    if df is None or df.empty or "Branch" not in df.columns:
+        st.info(t("No branch data available.", "لا توجد بيانات فروع."))
+        return
+
+    # Aggregate by branch
+    branch_agg = df.groupby("Branch", as_index=False).agg({
+        "Subtotal": "sum",
+        "Qty": "sum"
+    }).sort_values("Subtotal", ascending=False).head(3).reset_index(drop=True)
+    
+    if branch_agg.empty:
+        st.info(t("No branch data.", "لا توجد بيانات فروع."))
+        return
+    
+    branch_agg["Total (SAR)"] = branch_agg["Subtotal"].map(lambda v: f"{v:,.0f}")
+    branch_agg["Total Qty"] = branch_agg["Qty"].map(lambda v: f"{v:,.0f}")
+    
+    c1, c2 = st.columns([1.6, 1])
+    with c1:
+        # Horizontal bar chart (swap x and y for horizontal orientation)
+        chart = (
+            alt.Chart(branch_agg)
+            .mark_bar(cornerRadiusTopLeft=3, cornerRadiusTopRight=3, opacity=0.85)
+            .encode(
+                y=alt.Y("Branch:N", sort="-x", title=None),
+                x=alt.X("Subtotal:Q", title=t("Purchase Amount (SAR)", "مبلغ الشراء (ر.س)"), axis=alt.Axis(format="~s")),
+                color=alt.condition(
+                    alt.datum["Subtotal"] == branch_agg["Subtotal"].max(),
+                    alt.value("#e0c080"),
+                    alt.value(color),
+                ),
+                tooltip=[
+                    alt.Tooltip("Branch:N", title=t("Branch", "الفرع")),
+                    alt.Tooltip("Subtotal:Q", title=t("Amount (SAR)", "المبلغ (ر.س)"), format=",.0f"),
+                    alt.Tooltip("Qty:Q", title=t("Quantity", "الكمية"), format=",.0f"),
+                ],
+            )
+            .properties(height=180)
+            .configure(**_ALT_CFG)
+            .interactive()
+        )
+        st.altair_chart(chart, use_container_width=True)
+    
+    with c2:
+        # Small table with branch, amount, and quantity
+        display_df = branch_agg[["Branch", "Total (SAR)", "Total Qty"]].copy()
+        cols = display_df.columns.tolist()
+        thead = "".join(f"<th>{c}</th>" for c in cols)
+        tbody = "".join(
+            "<tr>" + "".join(
+                f'<td class="lux-key">{v}</td>' if ci == 0 else f"<td>{v}</td>"
+                for ci, v in enumerate(row)
+            ) + "</tr>"
+            for _, row in display_df.iterrows()
+        )
+        st.markdown(
+            f'{_TBL_CSS}<div class="lux-wrap">'
+            f'<table class="lux-tbl"><thead><tr>{thead} hilab</thead>'
+            f'<tbody>{tbody}</tbody></table></div>',
+            unsafe_allow_html=True
+        )
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# KPI ROWS (updated with branch KPI for purchase)
 # ─────────────────────────────────────────────────────────────────────────────
 def _kpi_sales(df: pd.DataFrame):
     c1, c2, c3, c4, c5 = st.columns(5)
@@ -1347,17 +1490,24 @@ def _kpi_sales(df: pd.DataFrame):
 
 
 def _kpi_purchase(df: pd.DataFrame):
-    c1, c2, c3, c4, c5 = st.columns(5)
+    c1, c2, c3, c4, c5, c6 = st.columns(6)
     c1.metric(t("Total Purchases", "إجمالي المشتريات"),   f"{df['Subtotal'].sum():,.0f} SAR")
     c2.metric(t("Qty Purchased", "الكمية المشتراة"),       f"{df['Qty'].sum():,.0f}")
     c3.metric(t("Purchase Orders", "أوامر الشراء"),        f"{df['PO'].nunique():,}")
     c4.metric(t("Unique Vendors", "موردون فريدون"),        f"{df['Vendor'].nunique():,}")
     avg = df.loc[df["Unit Price"] > 0, "Unit Price"].mean()
     c5.metric(t("Avg Unit Price", "متوسط سعر الوحدة"),    f"{avg:,.2f} SAR" if pd.notna(avg) else "—")
+    
+    # Branch KPI: distinct branches
+    if "Branch" in df.columns:
+        active_branches = df["Branch"].nunique()
+        c6.metric(t("Active Branches", "الفروع النشطة"),   f"{active_branches:,}")
+    else:
+        c6.metric(t("Active Branches", "الفروع النشطة"),   "N/A")
 
 
 # ─────────────────────────────────────────────────────────────────────────────
-# SALES ANALYTICS VIEW (uses paginated table)
+# SALES ANALYTICS VIEW (unchanged, uses paginated table)
 # ─────────────────────────────────────────────────────────────────────────────
 def show_sales_analytics(company: str):
     display_name = COMPANY_DISPLAY.get(company, company)
@@ -1628,7 +1778,7 @@ def show_sales_analytics(company: str):
 
 
 # ─────────────────────────────────────────────────────────────────────────────
-# PURCHASE ANALYTICS VIEW (uses paginated table)
+# PURCHASE ANALYTICS VIEW (with branch analytics)
 # ─────────────────────────────────────────────────────────────────────────────
 def show_purchase_analytics(company: str):
     display_name = COMPANY_DISPLAY.get(company, company)
@@ -1745,10 +1895,23 @@ def show_purchase_analytics(company: str):
         "Category", "Qty", df, color="#9a7ab8"
     )
 
-    # ── Share Donuts ──
+    # ── NEW: Top 3 Branches by Purchase Amount ─────────────────────────────
+    if "Branch" in df.columns and not df.empty:
+        st.divider()
+        _top3_branches_block(
+            t("Top 3 Branches by Purchase Amount", "أفضل 3 فروع حسب مبلغ الشراء"),
+            df, color="#d4af6a"
+        )
+
+    # ── Share Donuts (including Branch Share) ──────────────────────────────
     st.divider()
     _section(t("Share Analysis", "تحليل الحصص"))
-    d1, d2, d3 = st.columns(3)
+    # Use 4 columns if branch data exists, else 3
+    if "Branch" in df.columns and df["Branch"].nunique() > 1:
+        d1, d2, d3, d4 = st.columns(4)
+    else:
+        d1, d2, d3 = st.columns(3)
+        d4 = None
 
     def _prep_donut(src_df, group_col, value_col, na_label):
         grp = (
@@ -1756,7 +1919,7 @@ def show_purchase_analytics(company: str):
             .groupby(group_col, as_index=False)[value_col].sum()
             .sort_values(value_col, ascending=False)
         )
-        top    = grp.head(10)
+        top = grp.head(10)
         others = float(grp.iloc[10:][value_col].sum()) if len(grp) > 10 else 0
         labels = top[group_col].tolist()
         vals   = top[value_col].tolist()
@@ -1770,9 +1933,17 @@ def show_purchase_analytics(company: str):
     with d2:
         lbl, val = _prep_donut(df, "Category", "Subtotal", "(No Category)")
         _donut_chart(lbl, val, title=t("Category Share", "حصة الفئة"))
-    with d3:
-        lbl, val = _prep_donut(df, "Vendor", "Subtotal", "(No Vendor)")
-        _donut_chart(lbl, val, title=t("Vendor Share (Top 10)", "حصة الموردين"))
+    if d4 is not None:
+        with d3:
+            lbl, val = _prep_donut(df, "Vendor", "Subtotal", "(No Vendor)")
+            _donut_chart(lbl, val, title=t("Vendor Share (Top 10)", "حصة الموردين"))
+        with d4:
+            lbl, val = _prep_donut(df, "Branch", "Subtotal", "(No Branch)")
+            _donut_chart(lbl, val, title=t("Branch Share", "حصة الفروع"))
+    else:
+        with d3:
+            lbl, val = _prep_donut(df, "Vendor", "Subtotal", "(No Vendor)")
+            _donut_chart(lbl, val, title=t("Vendor Share (Top 10)", "حصة الموردين"))
 
     # ── Time-series Trends ──
     st.divider()
