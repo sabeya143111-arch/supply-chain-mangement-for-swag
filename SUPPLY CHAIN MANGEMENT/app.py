@@ -28,8 +28,8 @@ except ImportError:
     _HAS_PLOTLY = False
 
 st.set_page_config(
-    page_title="Luxury Analytics — Multi-Company",
-    page_icon="💎",
+    page_title="SWAG ODOO 4 COMAPNY ANOTHER CONNECTED TO EACH OTHER — Multi-Company",
+    page_icon="",
     layout="wide",
     initial_sidebar_state="expanded",
 )
