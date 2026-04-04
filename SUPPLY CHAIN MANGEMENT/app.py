@@ -497,14 +497,20 @@ def _rpc(url, db, uid, key, model, method, domain, kwargs):
 # ─────────────────────────────────────────────────────────────────────────────
 # GENERIC FETCH: SALES HISTORY
 # ─────────────────────────────────────────────────────────────────────────────
-@st.cache_data(ttl=1800, show_spinner=False)
+
+# Broad state lists — covers confirmed quotes, locked orders, and historic done
+_SALE_STATES    = ["draft", "sent", "sale", "done"]
+_PURCHASE_STATES = ["draft", "sent", "to approve", "purchase", "done"]
+
+
+@st.cache_data(ttl=900, show_spinner=False)
 def fetch_sales_history(system_key: str, model_code: str, date_from: str, date_to: str) -> pd.DataFrame:
     """
     Fetch sales order lines from any configured system.
 
     Args:
         system_key : one of SYSTEM_KEYS — key into st.secrets
-        model_code : product default_code to filter, or '' for all
+        model_code : product default_code exact filter, or '' / None for all
         date_from  : 'YYYY-MM-DD'
         date_to    : 'YYYY-MM-DD'
 
@@ -513,36 +519,90 @@ def fetch_sales_history(system_key: str, model_code: str, date_from: str, date_t
         Date, SO, Customer, Brand Category, Category,
         Model Code, Product, Qty, Unit Price, Subtotal
     """
-    cols = ["Date", "SO", "Customer", "Brand Category", "Category",
-            "Model Code", "Product", "Qty", "Unit Price", "Subtotal"]
+    cols  = ["Date", "SO", "Customer", "Brand Category", "Category",
+             "Model Code", "Product", "Qty", "Unit Price", "Subtotal"]
     empty = pd.DataFrame(columns=cols)
 
+    # ── 1. Secrets check ────────────────────────────────────────────────────
     cfg = st.secrets.get(system_key)
     if not cfg:
+        st.error(
+            f"❌ **[{system_key}]** section is missing from `secrets.toml`. "
+            f"Add `[{system_key}]` with url / db / user / api_key."
+        )
         return empty
 
+    for required_key in ("url", "db", "user", "api_key"):
+        if required_key not in cfg:
+            st.error(f"❌ `secrets.toml [{system_key}]` is missing the key `{required_key}`.")
+            return empty
+
+    # ── 2. Authentication ────────────────────────────────────────────────────
     uid = _auth(cfg["url"], cfg["db"], cfg["user"], cfg["api_key"])
     if not uid:
+        st.error(
+            f"❌ Authentication failed for **{system_key}** "
+            f"(`{cfg['db']}` @ `{cfg['url']}`). "
+            "Check your Odoo user credentials in secrets.toml."
+        )
         return empty
 
     u, db, ak = cfg["url"], cfg["db"], cfg["api_key"]
 
-    try:
-        domain = [
-            ["order_id.state", "in", ["sale", "done"]],
-            ["order_id.date_order", ">=", f"{date_from} 00:00:00"],
-            ["order_id.date_order", "<=", f"{date_to} 23:59:59"],
-        ]
-        if model_code and str(model_code).strip():
-            domain.append(["product_id.default_code", "=", str(model_code).strip()])
+    # ── 3. Build domain ──────────────────────────────────────────────────────
+    mc_clean = str(model_code).strip() if model_code else ""
 
+    domain = [
+        ["order_id.state", "in", _SALE_STATES],
+        ["order_id.date_order", ">=", f"{date_from} 00:00:00"],
+        ["order_id.date_order", "<=", f"{date_to} 23:59:59"],
+    ]
+    if mc_clean:
+        domain.append(["product_id.default_code", "=", mc_clean])
+
+    # ── 4. Fetch order lines ─────────────────────────────────────────────────
+    try:
         lines = _rpc(u, db, uid, ak, "sale.order.line", "search_read",
                      [domain],
                      {"fields": ["order_id", "product_id", "product_uom_qty", "price_unit"],
-                      "limit": 20000, "order": "order_id desc"})
-        if not lines:
-            return empty
+                      "limit": 20000,
+                      "order": "order_id desc"})
+    except Exception as exc:
+        st.error(f"❌ RPC error fetching `sale.order.line` for **{system_key}**: `{exc}`")
+        st.code(f"Domain used:\n{domain}", language="python")
+        return empty
 
+    if not lines:
+        # Diagnostic: try without state filter to see if records exist at all
+        try:
+            domain_no_state = [c for c in domain if c[0] != "order_id.state"]
+            fallback = _rpc(u, db, uid, ak, "sale.order.line", "search_read",
+                            [domain_no_state],
+                            {"fields": ["order_id"], "limit": 5})
+            fallback_count = len(fallback)
+        except Exception:
+            fallback_count = -1
+
+        if fallback_count > 0:
+            st.warning(
+                f"⚠️ **{system_key}** — The state filter `{_SALE_STATES}` returned 0 lines "
+                f"but **{fallback_count}** lines exist for this date range with other states. "
+                "Your orders may be in a state not covered by the filter. "
+                "Check the `order_id.state` values in your Odoo instance."
+            )
+            st.code(f"Domain used:\n{domain}", language="python")
+        elif fallback_count == 0:
+            st.info(
+                f"ℹ️ **{system_key}** — No `sale.order.line` records found for "
+                f"{date_from} → {date_to}"
+                + (f" with model `{mc_clean}`." if mc_clean else ".")
+            )
+            st.code(f"Domain used:\n{domain}", language="python")
+        # fallback_count == -1 means fallback itself errored; ignore silently
+        return empty
+
+    # ── 5. Fetch related orders and products ─────────────────────────────────
+    try:
         order_ids   = list({l["order_id"][0] for l in lines if isinstance(l.get("order_id"), list)})
         product_ids = list({l["product_id"][0] for l in lines if isinstance(l.get("product_id"), list)})
 
@@ -554,7 +614,8 @@ def fetch_sales_history(system_key: str, model_code: str, date_from: str, date_t
 
         products = _rpc(u, db, uid, ak, "product.product", "search_read",
                         [[["id", "in", product_ids]]],
-                        {"fields": ["id", "default_code", "display_name", "categ_id", "product_tmpl_id"],
+                        {"fields": ["id", "default_code", "display_name",
+                                    "categ_id", "product_tmpl_id"],
                          "limit": len(product_ids) + 10})
         prod_map = {p["id"]: p for p in products}
 
@@ -567,75 +628,89 @@ def fetch_sales_history(system_key: str, model_code: str, date_from: str, date_t
                              [[["id", "in", tmpl_ids]]],
                              {"fields": ["id", "x_brand_category_id"],
                               "limit": len(tmpl_ids) + 10})
-                tmpl_map = {t_["id"]: t_ for t_ in tmpls}
-            except Exception:
+                tmpl_map = {tmpl_["id"]: tmpl_ for tmpl_ in tmpls}
+            except Exception as exc:
+                # x_brand_category_id may not exist on all Odoo instances — non-fatal
+                st.warning(
+                    f"⚠️ Could not fetch `x_brand_category_id` for **{system_key}** "
+                    f"(field may not exist): `{exc}`. Brand Category will be empty."
+                )
                 tmpl_map = {}
 
-        rows = []
-        for line in lines:
-            oid = line["order_id"][0] if isinstance(line.get("order_id"), list) else None
-            pid = line["product_id"][0] if isinstance(line.get("product_id"), list) else None
-            order = order_map.get(oid, {})
-            prod  = prod_map.get(pid, {})
-
-            raw_date = order.get("date_order") or ""
-            try:
-                date_str = datetime.strptime(raw_date, "%Y-%m-%d %H:%M:%S").strftime("%Y-%m-%d")
-            except Exception:
-                date_str = raw_date[:10] if raw_date else ""
-
-            partner = order.get("partner_id")
-            customer = str(partner[1]) if isinstance(partner, list) and len(partner) > 1 else str(partner or "")
-
-            categ = prod.get("categ_id")
-            category = str(categ[1]) if isinstance(categ, list) and len(categ) > 1 else str(categ or "")
-
-            brand_category = ""
-            tmpl_ref = prod.get("product_tmpl_id")
-            if isinstance(tmpl_ref, list) and tmpl_ref:
-                tmpl = tmpl_map.get(tmpl_ref[0], {})
-                bc   = tmpl.get("x_brand_category_id")
-                brand_category = str(bc[1]) if isinstance(bc, list) and len(bc) > 1 else (str(bc) if bc else "")
-
-            qty        = float(line.get("product_uom_qty") or 0)
-            unit_price = float(line.get("price_unit") or 0)
-
-            rows.append({
-                "Date"          : date_str,
-                "SO"            : str(order.get("name") or ""),
-                "Customer"      : customer,
-                "Brand Category": brand_category,
-                "Category"      : category,
-                "Model Code"    : str(prod.get("default_code") or ""),
-                "Product"       : str(prod.get("display_name") or ""),
-                "Qty"           : qty,
-                "Unit Price"    : unit_price,
-                "Subtotal"      : round(qty * unit_price, 2),
-            })
-
-        if not rows:
-            return empty
-
-        df = pd.DataFrame(rows)
-        for col in ["Customer", "Brand Category", "Category", "Model Code", "Product", "SO", "Date"]:
-            df[col] = df[col].fillna("").astype(str)
-        return df.sort_values("Date", ascending=False).reset_index(drop=True)
-
-    except Exception:
+    except Exception as exc:
+        st.error(f"❌ RPC error fetching orders/products for **{system_key}**: `{exc}`")
         return empty
+
+    # ── 6. Build rows ────────────────────────────────────────────────────────
+    rows = []
+    for line in lines:
+        oid = line["order_id"][0] if isinstance(line.get("order_id"), list) else None
+        pid = line["product_id"][0] if isinstance(line.get("product_id"), list) else None
+        order = order_map.get(oid, {})
+        prod  = prod_map.get(pid, {})
+
+        raw_date = order.get("date_order") or ""
+        try:
+            date_str = datetime.strptime(raw_date, "%Y-%m-%d %H:%M:%S").strftime("%Y-%m-%d")
+        except Exception:
+            date_str = raw_date[:10] if raw_date else ""
+
+        partner  = order.get("partner_id")
+        customer = (str(partner[1]) if isinstance(partner, list) and len(partner) > 1
+                    else str(partner or ""))
+
+        categ    = prod.get("categ_id")
+        category = (str(categ[1]) if isinstance(categ, list) and len(categ) > 1
+                    else str(categ or ""))
+
+        brand_category = ""
+        tmpl_ref = prod.get("product_tmpl_id")
+        if isinstance(tmpl_ref, list) and tmpl_ref:
+            tmpl_ = tmpl_map.get(tmpl_ref[0], {})
+            bc    = tmpl_.get("x_brand_category_id")
+            brand_category = (str(bc[1]) if isinstance(bc, list) and len(bc) > 1
+                              else (str(bc) if bc else ""))
+
+        qty        = float(line.get("product_uom_qty") or 0)
+        unit_price = float(line.get("price_unit") or 0)
+
+        rows.append({
+            "Date"          : date_str,
+            "SO"            : str(order.get("name") or ""),
+            "Customer"      : customer,
+            "Brand Category": brand_category,
+            "Category"      : category,
+            "Model Code"    : str(prod.get("default_code") or ""),
+            "Product"       : str(prod.get("display_name") or ""),
+            "Qty"           : qty,
+            "Unit Price"    : unit_price,
+            "Subtotal"      : round(qty * unit_price, 2),
+        })
+
+    if not rows:
+        st.info(
+            f"ℹ️ **{system_key}** — Lines were fetched but produced no processable rows. "
+            "This is unexpected — check the RPC field mappings."
+        )
+        return empty
+
+    df = pd.DataFrame(rows)
+    for col in ["Customer", "Brand Category", "Category", "Model Code", "Product", "SO", "Date"]:
+        df[col] = df[col].fillna("").astype(str)
+    return df.sort_values("Date", ascending=False).reset_index(drop=True)
 
 
 # ─────────────────────────────────────────────────────────────────────────────
 # GENERIC FETCH: PURCHASE HISTORY
 # ─────────────────────────────────────────────────────────────────────────────
-@st.cache_data(ttl=1800, show_spinner=False)
+@st.cache_data(ttl=900, show_spinner=False)
 def fetch_purchase_history(system_key: str, model_code: str, date_from: str, date_to: str) -> pd.DataFrame:
     """
     Fetch purchase order lines from any configured system.
 
     Args:
         system_key : one of SYSTEM_KEYS — key into st.secrets
-        model_code : product default_code to filter, or '' for all
+        model_code : product default_code exact filter, or '' / None for all
         date_from  : 'YYYY-MM-DD'
         date_to    : 'YYYY-MM-DD'
 
@@ -644,36 +719,90 @@ def fetch_purchase_history(system_key: str, model_code: str, date_from: str, dat
         Date, PO, Vendor, Brand Category, Category,
         Model Code, Product, Qty, Unit Price, Subtotal
     """
-    cols = ["Date", "PO", "Vendor", "Brand Category", "Category",
-            "Model Code", "Product", "Qty", "Unit Price", "Subtotal"]
+    cols  = ["Date", "PO", "Vendor", "Brand Category", "Category",
+             "Model Code", "Product", "Qty", "Unit Price", "Subtotal"]
     empty = pd.DataFrame(columns=cols)
 
+    # ── 1. Secrets check ────────────────────────────────────────────────────
     cfg = st.secrets.get(system_key)
     if not cfg:
+        st.error(
+            f"❌ **[{system_key}]** section is missing from `secrets.toml`. "
+            f"Add `[{system_key}]` with url / db / user / api_key."
+        )
         return empty
 
+    for required_key in ("url", "db", "user", "api_key"):
+        if required_key not in cfg:
+            st.error(f"❌ `secrets.toml [{system_key}]` is missing the key `{required_key}`.")
+            return empty
+
+    # ── 2. Authentication ────────────────────────────────────────────────────
     uid = _auth(cfg["url"], cfg["db"], cfg["user"], cfg["api_key"])
     if not uid:
+        st.error(
+            f"❌ Authentication failed for **{system_key}** "
+            f"(`{cfg['db']}` @ `{cfg['url']}`). "
+            "Check your Odoo user credentials in secrets.toml."
+        )
         return empty
 
     u, db, ak = cfg["url"], cfg["db"], cfg["api_key"]
 
-    try:
-        domain = [
-            ["order_id.state", "in", ["purchase", "done"]],
-            ["order_id.date_order", ">=", f"{date_from} 00:00:00"],
-            ["order_id.date_order", "<=", f"{date_to} 23:59:59"],
-        ]
-        if model_code and str(model_code).strip():
-            domain.append(["product_id.default_code", "=", str(model_code).strip()])
+    # ── 3. Build domain ──────────────────────────────────────────────────────
+    mc_clean = str(model_code).strip() if model_code else ""
 
+    domain = [
+        ["order_id.state", "in", _PURCHASE_STATES],
+        ["order_id.date_order", ">=", f"{date_from} 00:00:00"],
+        ["order_id.date_order", "<=", f"{date_to} 23:59:59"],
+    ]
+    if mc_clean:
+        domain.append(["product_id.default_code", "=", mc_clean])
+
+    # ── 4. Fetch order lines ─────────────────────────────────────────────────
+    try:
         lines = _rpc(u, db, uid, ak, "purchase.order.line", "search_read",
                      [domain],
                      {"fields": ["order_id", "product_id", "product_qty", "price_unit"],
-                      "limit": 10000, "order": "order_id desc"})
-        if not lines:
-            return empty
+                      "limit": 10000,
+                      "order": "order_id desc"})
+    except Exception as exc:
+        st.error(f"❌ RPC error fetching `purchase.order.line` for **{system_key}**: `{exc}`")
+        st.code(f"Domain used:\n{domain}", language="python")
+        return empty
 
+    if not lines:
+        # Diagnostic: try without the state filter to check if records exist at all
+        try:
+            domain_no_state = [c for c in domain if c[0] != "order_id.state"]
+            fallback = _rpc(u, db, uid, ak, "purchase.order.line", "search_read",
+                            [domain_no_state],
+                            {"fields": ["order_id"], "limit": 5})
+            fallback_count = len(fallback)
+        except Exception:
+            fallback_count = -1
+
+        if fallback_count > 0:
+            st.warning(
+                f"⚠️ **{system_key}** — The state filter `{_PURCHASE_STATES}` returned 0 lines "
+                f"but **{fallback_count}** lines exist for this date range with other states. "
+                "Your purchase orders may be in a state not included in the filter. "
+                "Check the `order_id.state` values in your Odoo instance — common values are "
+                "`draft`, `sent`, `to approve`, `purchase`, `done`."
+            )
+            st.code(f"Domain used:\n{domain}", language="python")
+        elif fallback_count == 0:
+            st.info(
+                f"ℹ️ **{system_key}** — No `purchase.order.line` records found for "
+                f"{date_from} → {date_to}"
+                + (f" with model `{mc_clean}`." if mc_clean else ".")
+            )
+            st.code(f"Domain used:\n{domain}", language="python")
+        return empty
+
+    # ── 5. Fetch related orders and products ─────────────────────────────────
+    try:
         order_ids   = list({l["order_id"][0] for l in lines if isinstance(l.get("order_id"), list)})
         product_ids = list({l["product_id"][0] for l in lines if isinstance(l.get("product_id"), list)})
 
@@ -685,7 +814,8 @@ def fetch_purchase_history(system_key: str, model_code: str, date_from: str, dat
 
         products = _rpc(u, db, uid, ak, "product.product", "search_read",
                         [[["id", "in", product_ids]]],
-                        {"fields": ["id", "default_code", "display_name", "categ_id", "product_tmpl_id"],
+                        {"fields": ["id", "default_code", "display_name",
+                                    "categ_id", "product_tmpl_id"],
                          "limit": len(product_ids) + 10})
         prod_map = {p["id"]: p for p in products}
 
@@ -698,62 +828,76 @@ def fetch_purchase_history(system_key: str, model_code: str, date_from: str, dat
                              [[["id", "in", tmpl_ids]]],
                              {"fields": ["id", "x_brand_category_id"],
                               "limit": len(tmpl_ids) + 10})
-                tmpl_map = {t_["id"]: t_ for t_ in tmpls}
-            except Exception:
+                tmpl_map = {tmpl_["id"]: tmpl_ for tmpl_ in tmpls}
+            except Exception as exc:
+                # x_brand_category_id may not exist on all Odoo instances — non-fatal
+                st.warning(
+                    f"⚠️ Could not fetch `x_brand_category_id` for **{system_key}** "
+                    f"(field may not exist): `{exc}`. Brand Category will be empty."
+                )
                 tmpl_map = {}
 
-        rows = []
-        for line in lines:
-            oid = line["order_id"][0] if isinstance(line.get("order_id"), list) else None
-            pid = line["product_id"][0] if isinstance(line.get("product_id"), list) else None
-            order = order_map.get(oid, {})
-            prod  = prod_map.get(pid, {})
-
-            raw_date = order.get("date_order") or ""
-            try:
-                date_str = datetime.strptime(raw_date, "%Y-%m-%d %H:%M:%S").strftime("%Y-%m-%d")
-            except Exception:
-                date_str = raw_date[:10] if raw_date else ""
-
-            partner = order.get("partner_id")
-            vendor = str(partner[1]) if isinstance(partner, list) and len(partner) > 1 else str(partner or "")
-
-            categ = prod.get("categ_id")
-            category = str(categ[1]) if isinstance(categ, list) and len(categ) > 1 else str(categ or "")
-
-            brand_category = ""
-            tmpl_ref = prod.get("product_tmpl_id")
-            if isinstance(tmpl_ref, list) and tmpl_ref:
-                tmpl = tmpl_map.get(tmpl_ref[0], {})
-                bc   = tmpl.get("x_brand_category_id")
-                brand_category = str(bc[1]) if isinstance(bc, list) and len(bc) > 1 else (str(bc) if bc else "")
-
-            qty        = float(line.get("product_qty") or 0)
-            unit_price = float(line.get("price_unit") or 0)
-
-            rows.append({
-                "Date"          : date_str,
-                "PO"            : str(order.get("name") or ""),
-                "Vendor"        : vendor,
-                "Brand Category": brand_category,
-                "Category"      : category,
-                "Model Code"    : str(prod.get("default_code") or ""),
-                "Product"       : str(prod.get("display_name") or ""),
-                "Qty"           : qty,
-                "Unit Price"    : unit_price,
-                "Subtotal"      : round(qty * unit_price, 2),
-            })
-
-        if not rows:
-            return empty
-
-        df = pd.DataFrame(rows)
-        for col in ["Vendor", "Brand Category", "Category", "Model Code", "Product", "PO", "Date"]:
-            df[col] = df[col].fillna("").astype(str)
-        return df.sort_values("Date", ascending=False).reset_index(drop=True)
-
-    except Exception:
+    except Exception as exc:
+        st.error(f"❌ RPC error fetching orders/products for **{system_key}**: `{exc}`")
         return empty
+
+    # ── 6. Build rows ────────────────────────────────────────────────────────
+    rows = []
+    for line in lines:
+        oid = line["order_id"][0] if isinstance(line.get("order_id"), list) else None
+        pid = line["product_id"][0] if isinstance(line.get("product_id"), list) else None
+        order = order_map.get(oid, {})
+        prod  = prod_map.get(pid, {})
+
+        raw_date = order.get("date_order") or ""
+        try:
+            date_str = datetime.strptime(raw_date, "%Y-%m-%d %H:%M:%S").strftime("%Y-%m-%d")
+        except Exception:
+            date_str = raw_date[:10] if raw_date else ""
+
+        partner = order.get("partner_id")
+        vendor  = (str(partner[1]) if isinstance(partner, list) and len(partner) > 1
+                   else str(partner or ""))
+
+        categ    = prod.get("categ_id")
+        category = (str(categ[1]) if isinstance(categ, list) and len(categ) > 1
+                    else str(categ or ""))
+
+        brand_category = ""
+        tmpl_ref = prod.get("product_tmpl_id")
+        if isinstance(tmpl_ref, list) and tmpl_ref:
+            tmpl_ = tmpl_map.get(tmpl_ref[0], {})
+            bc    = tmpl_.get("x_brand_category_id")
+            brand_category = (str(bc[1]) if isinstance(bc, list) and len(bc) > 1
+                              else (str(bc) if bc else ""))
+
+        qty        = float(line.get("product_qty") or 0)
+        unit_price = float(line.get("price_unit") or 0)
+
+        rows.append({
+            "Date"          : date_str,
+            "PO"            : str(order.get("name") or ""),
+            "Vendor"        : vendor,
+            "Brand Category": brand_category,
+            "Category"      : category,
+            "Model Code"    : str(prod.get("default_code") or ""),
+            "Product"       : str(prod.get("display_name") or ""),
+            "Qty"           : qty,
+            "Unit Price"    : unit_price,
+            "Subtotal"      : round(qty * unit_price, 2),
+        })
+
+    if not rows:
+        st.info(
+            f"ℹ️ **{system_key}** — Lines were fetched but produced no processable rows. "
+            "This is unexpected — check the RPC field mappings."
+        )
+        return empty
+
+    df = pd.DataFrame(rows)
+    for col in ["Vendor", "Brand Category", "Category", "Model Code", "Product", "PO", "Date"]:
+        df[col] = df[col].fillna("").astype(str)
+    return df.sort_values("Date", ascending=False).reset_index(drop=True)
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -1136,10 +1280,12 @@ def show_sales_analytics(company: str):
         t("◆  Fetch Sales Data", "◆  جلب بيانات المبيعات"),
         type="primary", key=f"fetch_sales_{company}"
     ):
+        # Clear cache so a new date range / model always hits Odoo fresh
+        fetch_sales_history.clear()
         with st.spinner(t("Retrieving data…", "جارٍ جلب البيانات…")):
             fetched = fetch_sales_history(
                 system_key=company,
-                model_code="",
+                model_code=model_input,          # ← pass actual UI input, not ""
                 date_from=date_from.strftime("%Y-%m-%d"),
                 date_to=date_to.strftime("%Y-%m-%d"),
             )
@@ -1362,10 +1508,12 @@ def show_purchase_analytics(company: str):
         t("◆  Fetch Purchase Data", "◆  جلب بيانات المشتريات"),
         type="primary", key=f"fetch_purch_{company}"
     ):
+        # Clear cache so a new date range / model always hits Odoo fresh
+        fetch_purchase_history.clear()
         with st.spinner(t("Retrieving data…", "جارٍ جلب البيانات…")):
             fetched = fetch_purchase_history(
                 system_key=company,
-                model_code="",
+                model_code=model_input,          # ← pass actual UI input, not ""
                 date_from=date_from.strftime("%Y-%m-%d"),
                 date_to=date_to.strftime("%Y-%m-%d"),
             )
