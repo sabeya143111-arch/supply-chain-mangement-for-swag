@@ -8,7 +8,7 @@
 #   3. Sales tab null check & t() columns
 #   4. Purchase tab null check & t() columns
 #   5. to_excel_branch_matrix — return b""
-#   6. Paginated table HTML — </tr> closing tag
+#   6. Paginated table HTML — closing </tr> tag
 #   7. get_purchase_summary_by_model — all SYSTEM_KEYS
 #   8. Language cache — clear data on lang switch
 
@@ -28,7 +28,7 @@ import streamlit as st
 
 st.set_page_config(
     page_title="Swag",
-    page_icon="",
+    page_icon="💎",
     layout="wide",
     initial_sidebar_state="expanded",
 )
@@ -554,12 +554,12 @@ def render_paginated_table(df, page_key, rows_per_page=ROWS_PER_PAGE):
     end   = min(start + rows_per_page, total_rows)
     page_df = df.iloc[start:end]
 
-    # Build HTML table — BUG FIX #6: was `"<tr>"` at end → must be `"</tr>"`
+    # Build HTML table — BUG FIX #6: was `"</table>"` at end → must be `"</tr>"`
     table_html = (
         "<div class='dataframe-wrap'><table>"
         "<thead><tr>"
         + "".join(f"<th>{c}</th>" for c in page_df.columns)
-        + "</tr></thead><tbody>"
+        + "</thead><tbody>"
     )
     for _, row in page_df.iterrows():
         table_html += (
@@ -1829,7 +1829,7 @@ def show_dashboard():
     # ── HEADER ────────────────────────────────────────────────────────────────
     st.markdown(f"""
     <div class='dash-header'>
-        <div class='dash-title'>SWAG -MULTI DASBOARD</div>
+        <div class='dash-title'>SWAG - MULTI DASHBOARD</div>
         <div class='dash-subtitle'>{t('Multi-Company · Inventory · POS · Sales · Purchase · AI Insights','متعدد الشركات · المخزون · نقاط البيع · المبيعات · المشتريات · تحليلات ذكية')}</div>
     </div>""", unsafe_allow_html=True)
     st.divider()
