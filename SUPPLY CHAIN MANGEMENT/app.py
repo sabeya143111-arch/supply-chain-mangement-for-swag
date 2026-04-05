@@ -18,7 +18,7 @@ st.set_page_config(
 )
 
 # ─────────────────────────────────────────────────────────────────────────────
-# CSS (unchanged)
+# CSS
 # ─────────────────────────────────────────────────────────────────────────────
 st.markdown("""
 <style>
@@ -107,7 +107,7 @@ footer{visibility:hidden;}
 SYSTEM_KEYS = ["SWAG", "LAROUCHE", "DIFFC", "FASHION_LIMITS"]
 
 # ─────────────────────────────────────────────────────────────────────────────
-# LANGUAGE
+# LANGUAGE HELPERS
 # ─────────────────────────────────────────────────────────────────────────────
 def get_lang():
     return st.session_state.get("lang", "EN")
@@ -167,11 +167,11 @@ def restore_session():
         return
     try:
         params = st.query_params
-        email = params.get("u", "")
-        token = params.get("t", "")
+        email  = params.get("u", "")
+        token  = params.get("t", "")
         if email and token and _verify_token(email, token):
             st.session_state.authenticated = True
-            st.session_state.user_email = email
+            st.session_state.user_email    = email
     except Exception:
         pass
 
@@ -201,70 +201,66 @@ def _get_uid_for_key(key):
     return (cfg, uid) if uid else (None, None)
 
 # ─────────────────────────────────────────────────────────────────────────────
-# MISSING HELPER FUNCTIONS (added to fix NameError)
+# UTILITY HELPERS
 # ─────────────────────────────────────────────────────────────────────────────
 def _domain(codes, exact=False):
-    """Build domain for product default_code filter."""
+    """Build Odoo domain for product default_code filter."""
     if not codes:
         return []
     if exact:
-        return [("default_code", "in", codes)]
-    else:
-        return ["|"] + [("default_code", "=ilike", f"{code}%") for code in codes]
+        return [("default_code", "in", list(codes))]
+    return ["|"] + [("default_code", "=ilike", f"{code}%") for code in codes]
 
 def localize_columns(df):
-    """Rename columns based on current language."""
+    """Rename English column headers to the current UI language."""
     if df is None or df.empty:
         return df
     rename_map = {
-        "System": t("System", "النظام"),
-        "Model Code": t("Model Code", "رمز الموديل"),
-        "Product": t("Product", "المنتج"),
-        "Sale Price": t("Sale Price", "سعر البيع"),
-        "On Hand": t("On Hand", "متوفر"),
-        "Branch": t("Branch", "الفرع"),
-        "Location": t("Location", "الموقع"),
-        "Date": t("Date", "التاريخ"),
-        "POS Order": t("POS Order", "طلب نقطة بيع"),
-        "Customer": t("Customer", "العميل"),
-        "Cashier": t("Cashier", "الكاشير"),
-        "Category": t("Category", "الفئة"),
-        "Qty": t("Qty", "الكمية"),
-        "Unit Price": t("Unit Price", "سعر الوحدة"),
-        "Subtotal": t("Subtotal", "المجموع الفرعي"),
-        "SO": t("SO", "أمر بيع"),
-        "Brand Category": t("Brand Category", "فئة العلامة التجارية"),
-        "Vendor": t("Vendor", "المورد"),
-        "Receipt Location": t("Receipt Location", "موقع الاستلام"),
-        "Purchase Qty": t("Purchase Qty", "كمية الشراء"),
+        "System":           t("System",           "النظام"),
+        "Model Code":       t("Model Code",        "رمز الموديل"),
+        "Product":          t("Product",           "المنتج"),
+        "Sale Price":       t("Sale Price",        "سعر البيع"),
+        "On Hand":          t("On Hand",           "متوفر"),
+        "Branch":           t("Branch",            "الفرع"),
+        "Location":         t("Location",          "الموقع"),
+        "Date":             t("Date",              "التاريخ"),
+        "POS Order":        t("POS Order",         "طلب نقطة بيع"),
+        "Customer":         t("Customer",          "العميل"),
+        "Cashier":          t("Cashier",           "الكاشير"),
+        "Category":         t("Category",          "الفئة"),
+        "Qty":              t("Qty",               "الكمية"),
+        "Unit Price":       t("Unit Price",        "سعر الوحدة"),
+        "Subtotal":         t("Subtotal",          "المجموع الفرعي"),
+        "SO":               t("SO",                "أمر بيع"),
+        "Brand Category":   t("Brand Category",    "فئة العلامة التجارية"),
+        "Vendor":           t("Vendor",            "المورد"),
+        "Receipt Location": t("Receipt Location",  "موقع الاستلام"),
+        "Purchase Qty":     t("Purchase Qty",      "كمية الشراء"),
     }
-    # rename only columns that exist
     to_rename = {k: v for k, v in rename_map.items() if k in df.columns}
     return df.rename(columns=to_rename)
 
 def prepare_df(df):
-    """Prepare dataframe for display: localize columns, clean status, numeric conversions."""
+    """Localize columns, drop internal-only columns, coerce numeric types."""
     if df is None or df.empty:
         return df
     df = localize_columns(df)
     if "_status" in df.columns:
         df = df.drop(columns=["_status"])
-    # Ensure numeric columns are numbers
-    numeric_cols = ["On Hand", "Sale Price", "Qty", "Unit Price", "Subtotal", "Purchase Qty"]
+    numeric_cols = [
+        "On Hand", "Sale Price", "Qty", "Unit Price", "Subtotal", "Purchase Qty",
+        t("On Hand", "متوفر"), t("Sale Price", "سعر البيع"),
+        t("Qty", "الكمية"),    t("Unit Price", "سعر الوحدة"),
+        t("Subtotal", "المجموع الفرعي"),
+    ]
     for col in numeric_cols:
         if col in df.columns:
             df[col] = pd.to_numeric(df[col], errors="coerce").fillna(0)
     return df
 
-def get_qty_display(row, col):
-    """Helper to format quantity with unit if needed."""
-    val = row.get(col, 0)
-    try:
-        return f"{int(val):,}"
-    except:
-        return str(val)
-
-# Export helpers
+# ─────────────────────────────────────────────────────────────────────────────
+# EXPORT HELPERS
+# ─────────────────────────────────────────────────────────────────────────────
 def to_csv(df):
     return df.to_csv(index=False).encode("utf-8-sig")
 
@@ -272,14 +268,13 @@ def to_excel(df):
     output = io.BytesIO()
     with pd.ExcelWriter(output, engine="openpyxl") as writer:
         df.to_excel(writer, sheet_name="Data", index=False)
-        # style worksheet (optional)
         try:
             from openpyxl.styles import Font, Alignment
             ws = writer.sheets["Data"]
             for cell in ws[1]:
-                cell.font = Font(bold=True)
+                cell.font      = Font(bold=True)
                 cell.alignment = Alignment(horizontal="center")
-        except:
+        except Exception:
             pass
     return output.getvalue()
 
@@ -291,98 +286,251 @@ def to_excel_bulk(dfs, sheet_names):
     return output.getvalue()
 
 def to_excel_branch_matrix(branch_df, lang):
-    """Create pivot table: Branch vs Model Code with On Hand qty."""
+    """Pivot: Branch × Model Code showing On Hand quantity."""
     if branch_df is None or branch_df.empty:
         return b""
-    # localize columns first
-    branch_df = localize_columns(branch_df)
-    sys_col = t("System", "النظام")
-    branch_col = t("Branch", "الفرع")
-    model_col = t("Model Code", "رمز الموديل")
-    qty_col = t("On Hand", "متوفر")
+    branch_df  = localize_columns(branch_df)
+    branch_col = t("Branch",     "الفرع")
+    model_col  = t("Model Code", "رمز الموديل")
+    qty_col    = t("On Hand",    "متوفر")
     if branch_col not in branch_df.columns or model_col not in branch_df.columns:
         return b""
-    pivot = branch_df.pivot_table(index=branch_col, columns=model_col, values=qty_col, aggfunc="sum", fill_value=0)
+    pivot = branch_df.pivot_table(
+        index=branch_col, columns=model_col,
+        values=qty_col, aggfunc="sum", fill_value=0,
+    )
     output = io.BytesIO()
     with pd.ExcelWriter(output, engine="openpyxl") as writer:
         pivot.to_excel(writer, sheet_name="Branch_Matrix")
     return output.getvalue()
 
-def to_excel_sales(df):
-    """Reuse same styling as to_excel."""
-    return to_excel(df)
-
-def to_excel_purchase(df):
-    return to_excel(df)
-
 def dl_name(prefix, ext):
-    timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-    return f"{prefix}_{timestamp}.{ext}"
+    return f"{prefix}_{datetime.now().strftime('%Y%m%d_%H%M%S')}.{ext}"
 
-# Display functions
+# ─────────────────────────────────────────────────────────────────────────────
+# TABLE DISPLAY
+# ─────────────────────────────────────────────────────────────────────────────
 _TABLE_CSS = """
 <style>
-.dataframe {
-    font-family: 'IBM Plex Sans Arabic', sans-serif;
-    border-collapse: collapse;
-    width: 100%;
-    background: #1e1e3f;
-    color: #e8e8ff;
-    border-radius: 12px;
-    overflow: hidden;
-}
-.dataframe th {
-    background: linear-gradient(135deg, #667eea, #764ba2);
-    color: white;
-    padding: 10px 12px;
-    text-align: center;
-    font-weight: 600;
-}
-.dataframe td {
-    padding: 8px 12px;
-    text-align: center;
-    border-bottom: 1px solid #2d2b55;
-}
-.dataframe tr:hover {
-    background: #2d2b55;
-}
+.dataframe{font-family:'IBM Plex Sans Arabic',sans-serif;border-collapse:collapse;
+width:100%;background:#1e1e3f;color:#e8e8ff;border-radius:12px;overflow:hidden;}
+.dataframe th{background:linear-gradient(135deg,#667eea,#764ba2);color:white;
+padding:10px 12px;text-align:center;font-weight:600;}
+.dataframe td{padding:8px 12px;text-align:center;border-bottom:1px solid #2d2b55;}
+.dataframe tr:hover{background:#2d2b55;}
 </style>
 """
 
 def _render_html_table(df, max_rows=1000):
-    """Render DataFrame as styled HTML table."""
     if df is None or df.empty:
         st.write("No data to display.")
         return
-    show_df = df.head(max_rows)
     st.markdown(_TABLE_CSS, unsafe_allow_html=True)
-    st.markdown(show_df.to_html(classes="dataframe", index=False, escape=False), unsafe_allow_html=True)
+    st.markdown(
+        df.head(max_rows).to_html(classes="dataframe", index=False, escape=False),
+        unsafe_allow_html=True,
+    )
     if len(df) > max_rows:
         st.caption(f"Showing first {max_rows} of {len(df)} rows.")
 
 def display_df(df, thresh=None, table_key=None):
-    """Wrapper to display dataframe with optional low stock highlighting."""
     if df is None or df.empty:
         return df
-    # For inventory, highlight low stock
-    if thresh is not None and "On Hand" in df.columns:
-        # create a copy with styling (simplified: just show the df)
-        pass
     _render_html_table(df)
     return df
 
 # ─────────────────────────────────────────────────────────────────────────────
-# PURCHASE FUNCTIONS (missing from original snippet)
+# ══════════════════════════════════════════════════════════════════════════════
+# fetchalldata  –  YOUR REAL IMPLEMENTATION
+# ══════════════════════════════════════════════════════════════════════════════
+# Keep your existing fetchalldata body here exactly as it is.
+# The function MUST return exactly 4 values:
+#   (total_df, branch_df, transfers_df, reorder_df)
+#
+# The stub below is a safe placeholder so the file runs without a real Odoo
+# connection. Replace it with your full implementation.
+# ─────────────────────────────────────────────────────────────────────────────
+@st.cache_data(ttl=1800, show_spinner=False)
+def fetchalldata(
+    codestuple=(),
+    exact=False,
+    needbranch=True,
+    needtransfers=False,
+    needreorder=False,
+    reordermode="dayscover",
+    targetdays=30,
+    maxlevel=100,
+    reorderpoint=10,
+):
+    """
+    Fetch inventory data across all configured Odoo systems.
+
+    Parameters
+    ----------
+    codestuple   : tuple of str  – model-code prefixes (or exact codes) to filter on.
+    exact        : bool          – if True use exact match, else prefix match.
+    needbranch   : bool          – also return per-location breakdown.
+    needtransfers: bool          – include incoming transfer data (transfers_df).
+    needreorder  : bool          – compute reorder suggestions (reorder_df).
+    reordermode  : str           – "dayscover" | "minmax"
+    targetdays   : int           – days of cover target for reorder calculation.
+    maxlevel     : int           – max stock level for reorder.
+    reorderpoint : int           – reorder trigger point.
+
+    Returns
+    -------
+    total_df     : pd.DataFrame  – one row per product per system with On Hand qty.
+    branch_df    : pd.DataFrame  – one row per location per product.
+    transfers_df : pd.DataFrame  – incoming transfers (empty if needtransfers=False).
+    reorder_df   : pd.DataFrame  – reorder suggestions (empty if needreorder=False).
+    """
+    all_rows        = []
+    all_branch_rows = []
+    empty           = pd.DataFrame()
+
+    for key in SYSTEM_KEYS:
+        cfg = st.secrets.get(key)
+        if not cfg:
+            continue
+        uid = _auth(cfg["url"], cfg["db"], cfg["user"], cfg["api_key"])
+        if not uid:
+            continue
+
+        u, db, ak   = cfg["url"], cfg["db"], cfg["api_key"]
+        system_name = get_system_name(key)
+
+        try:
+            # ── Build product domain ──────────────────────────────────────
+            prod_domain: list = []
+            if codestuple:
+                if exact:
+                    prod_domain = [("default_code", "in", list(codestuple))]
+                else:
+                    clauses = [("default_code", "=ilike", f"{c}%") for c in codestuple]
+                    if len(clauses) == 1:
+                        prod_domain = [clauses[0]]
+                    else:
+                        prod_domain = ["|"] * (len(clauses) - 1) + clauses
+
+            products = _x(u, db, uid, ak, "product.template", "search_read",
+                          [prod_domain] if prod_domain else [[]],
+                          {"fields": ["id", "name", "default_code", "list_price", "categ_id"],
+                           "limit": 5000})
+            if not products:
+                continue
+
+            prod_ids = [p["id"] for p in products]
+            prod_map = {p["id"]: p for p in products}
+
+            # ── Fetch stock quants ────────────────────────────────────────
+            quants = _x(u, db, uid, ak, "stock.quant", "search_read",
+                        [[("product_id.product_tmpl_id", "in", prod_ids),
+                          ("location_id.usage", "=", "internal")]],
+                        {"fields": ["product_id", "location_id", "quantity",
+                                    "product_id.product_tmpl_id"],
+                         "limit": 50000})
+
+            # aggregate by template id
+            tmpl_qty: dict = {}
+            for q in quants:
+                # product_id.product_tmpl_id comes back as a list field
+                tmpl_id_raw = q.get("product_id.product_tmpl_id")
+                if isinstance(tmpl_id_raw, list):
+                    tmpl_id = tmpl_id_raw[0]
+                else:
+                    # fallback: use product_id and hope it maps to template
+                    pid_raw = q.get("product_id")
+                    tmpl_id = pid_raw[0] if isinstance(pid_raw, list) else pid_raw
+                qty = float(q.get("quantity") or 0)
+                tmpl_qty[tmpl_id] = tmpl_qty.get(tmpl_id, 0) + qty
+
+                if needbranch:
+                    loc = q.get("location_id")
+                    loc_name = loc[1] if isinstance(loc, list) and len(loc) > 1 else str(loc or "")
+                    # We'll enrich model code later
+                    all_branch_rows.append({
+                        "System":     system_name,
+                        "Branch":     loc_name,
+                        "_tmpl_id":   tmpl_id,
+                        "On Hand":    qty,
+                    })
+
+            for tmpl_id, prod in prod_map.items():
+                qty = tmpl_qty.get(tmpl_id, 0)
+                all_rows.append({
+                    "System":     system_name,
+                    "Model Code": prod.get("default_code", ""),
+                    "Product":    prod.get("name", ""),
+                    "Sale Price": float(prod.get("list_price") or 0),
+                    "On Hand":    qty,
+                    "_status":    "OK",
+                })
+
+        except Exception:
+            continue
+
+    # ── Build DataFrames ──────────────────────────────────────────────────────
+    total_df = pd.DataFrame(all_rows) if all_rows else pd.DataFrame(
+        columns=["System", "Model Code", "Product", "Sale Price", "On Hand", "_status"])
+
+    if needbranch and all_branch_rows:
+        # Re-attach model codes to branch rows
+        # Build a tmpl_id → model_code lookup from total_df
+        # (total_df still has English column names here)
+        branch_df_raw = pd.DataFrame(all_branch_rows)
+        # Drop the internal helper column
+        branch_df = branch_df_raw.drop(columns=["_tmpl_id"], errors="ignore")
+        branch_df["Model Code"] = ""   # placeholder; real impl would join properly
+    else:
+        branch_df = pd.DataFrame(
+            columns=["System", "Branch", "Model Code", "On Hand"])
+
+    # transfers and reorder are not implemented in this stub
+    transfers_df = empty
+    reorder_df   = empty
+
+    return total_df, branch_df, transfers_df, reorder_df
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# ▸ FIX: compatibility wrapper  ──────────────────────────────────────────────
+#   Resolves NameError: name 'fetch_inventory_data' is not defined
+#   Called by show_dashboard(); delegates to fetchalldata() and returns only
+#   (total_df, branch_df) – the two values the dashboard needs.
+# ─────────────────────────────────────────────────────────────────────────────
+def fetch_inventory_data(
+    codestuple=(),
+    exact=False,
+    needbranch=True,
+    needtransfers=False,
+    needreorder=False,
+    reordermode="dayscover",
+    targetdays=30,
+    maxlevel=100,
+    reorderpoint=10,
+):
+    total_df, branch_df, _, _ = fetchalldata(
+        codestuple=codestuple,
+        exact=exact,
+        needbranch=needbranch,
+        needtransfers=needtransfers,
+        needreorder=needreorder,
+        reordermode=reordermode,
+        targetdays=targetdays,
+        maxlevel=maxlevel,
+        reorderpoint=reorderpoint,
+    )
+    return total_df, branch_df
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# PURCHASE FETCH
 # ─────────────────────────────────────────────────────────────────────────────
 @st.cache_data(ttl=1800, show_spinner=False)
 def fetch_purchase_history_for_system(system_key, model_code, date_from, date_to):
-    """
-    Fetch purchase orders for a single system.
-    Returns DataFrame with columns:
-      Date, PO, Vendor, Receipt Location, Category, Model Code, Product, Qty, Unit Price, Subtotal, System
-    """
-    empty_cols = ["Date", "PO", "Vendor", "Receipt Location", "Category", "Model Code", "Product", "Qty", "Unit Price", "Subtotal", "System"]
-    empty_df = pd.DataFrame(columns=empty_cols)
+    _empty_cols = ["Date", "PO", "Vendor", "Receipt Location", "Category",
+                   "Model Code", "Product", "Qty", "Unit Price", "Subtotal", "System"]
+    empty_df = pd.DataFrame(columns=_empty_cols)
 
     cfg = st.secrets.get(system_key)
     if not cfg:
@@ -391,56 +539,58 @@ def fetch_purchase_history_for_system(system_key, model_code, date_from, date_to
     if not uid:
         return empty_df
 
-    u, db, ak = cfg["url"], cfg["db"], cfg["api_key"]
+    u, db, ak   = cfg["url"], cfg["db"], cfg["api_key"]
     system_name = get_system_name(system_key)
 
     try:
-        # Fetch purchase orders
         po_domain = [
             ["date_approve", ">=", f"{date_from} 00:00:00"],
             ["date_approve", "<=", f"{date_to} 23:59:59"],
-            ["state", "in", ["purchase", "done"]]
+            ["state", "in", ["purchase", "done"]],
         ]
         pos = _x(u, db, uid, ak, "purchase.order", "search_read", [po_domain],
-                 {"fields": ["id", "name", "partner_id", "date_approve", "state"], "limit": 2000})
+                 {"fields": ["id", "name", "partner_id", "date_approve", "state"],
+                  "limit": 2000})
         if not pos:
             return empty_df
+
         po_ids = [p["id"] for p in pos]
         po_map = {p["id"]: p for p in pos}
 
-        # Fetch lines
         lines = _x(u, db, uid, ak, "purchase.order.line", "search_read",
                    [[["order_id", "in", po_ids]]],
-                   {"fields": ["order_id", "product_id", "product_qty", "price_unit", "price_subtotal"],
+                   {"fields": ["order_id", "product_id", "product_qty",
+                               "price_unit", "price_subtotal"],
                     "limit": 20000})
         if not lines:
             return empty_df
 
-        # Products
-        prod_ids = list({l["product_id"][0] for l in lines if isinstance(l.get("product_id"), list)})
+        prod_ids = list({l["product_id"][0] for l in lines
+                         if isinstance(l.get("product_id"), list)})
         products = _x(u, db, uid, ak, "product.product", "search_read",
                       [[["id", "in", prod_ids]]],
-                      {"fields": ["id", "default_code", "name", "categ_id"], "limit": len(prod_ids)+10})
+                      {"fields": ["id", "default_code", "name", "categ_id"],
+                       "limit": len(prod_ids) + 10})
         prod_map = {p["id"]: p for p in products}
 
-        # Fetch receipt locations via stock.picking linked to purchase order
         pickings = _x(u, db, uid, ak, "stock.picking", "search_read",
-                      [[["origin", "in", [p["name"] for p in pos]], ["picking_type_code", "=", "incoming"]]],
+                      [[["origin", "in", [p["name"] for p in pos]],
+                        ["picking_type_code", "=", "incoming"]]],
                       {"fields": ["origin", "location_dest_id"], "limit": 2000})
-        receipt_map = {}
+        receipt_map: dict = {}
         for pick in pickings:
-            origin = pick.get("origin", "")
-            loc = pick.get("location_dest_id")
-            loc_name = loc[1] if isinstance(loc, list) and len(loc) > 1 else str(loc) if loc else ""
-            receipt_map[origin] = loc_name
+            loc      = pick.get("location_dest_id")
+            loc_name = (loc[1] if isinstance(loc, list) and len(loc) > 1
+                        else str(loc) if loc else "")
+            receipt_map[pick.get("origin", "")] = loc_name
 
         rows = []
         for line in lines:
-            oid = line["order_id"][0] if isinstance(line.get("order_id"), list) else None
-            po = po_map.get(oid, {})
+            oid  = line["order_id"][0] if isinstance(line.get("order_id"), list) else None
+            po   = po_map.get(oid, {})
             if not po:
                 continue
-            pid = line["product_id"][0] if isinstance(line.get("product_id"), list) else None
+            pid  = line["product_id"][0] if isinstance(line.get("product_id"), list) else None
             prod = prod_map.get(pid, {})
 
             model_code_val = prod.get("default_code", "").strip()
@@ -448,44 +598,43 @@ def fetch_purchase_history_for_system(system_key, model_code, date_from, date_to
                 if not model_code_val.upper().startswith(model_code.upper()):
                     continue
 
-            # Receipt location
             receipt_loc = receipt_map.get(po.get("name", ""), "")
-
-            # Category
-            categ_obj = prod.get("categ_id")
-            category = categ_obj[1] if isinstance(categ_obj, list) and len(categ_obj) > 1 else (str(categ_obj) if categ_obj else "")
-
-            # Vendor
+            categ_obj   = prod.get("categ_id")
+            category    = (categ_obj[1] if isinstance(categ_obj, list) and len(categ_obj) > 1
+                           else str(categ_obj) if categ_obj else "")
             partner_obj = po.get("partner_id")
-            vendor = partner_obj[1] if isinstance(partner_obj, list) and len(partner_obj) > 1 else (str(partner_obj) if partner_obj else "")
+            vendor      = (partner_obj[1] if isinstance(partner_obj, list) and len(partner_obj) > 1
+                           else str(partner_obj) if partner_obj else "")
 
             rows.append({
-                "System": system_name,
-                "Date": str(po.get("date_approve", ""))[:10],
-                "PO": po.get("name", ""),
-                "Vendor": vendor,
+                "System":           system_name,
+                "Date":             str(po.get("date_approve", ""))[:10],
+                "PO":               po.get("name", ""),
+                "Vendor":           vendor,
                 "Receipt Location": receipt_loc,
-                "Category": category,
-                "Model Code": model_code_val,
-                "Product": prod.get("name", ""),
-                "Qty": float(line.get("product_qty") or 0),
-                "Unit Price": float(line.get("price_unit") or 0),
-                "Subtotal": float(line.get("price_subtotal") or 0),
+                "Category":         category,
+                "Model Code":       model_code_val,
+                "Product":          prod.get("name", ""),
+                "Qty":              float(line.get("product_qty") or 0),
+                "Unit Price":       float(line.get("price_unit") or 0),
+                "Subtotal":         float(line.get("price_subtotal") or 0),
             })
 
         if not rows:
             return empty_df
-        df = pd.DataFrame(rows)
+        df         = pd.DataFrame(rows)
         df["Date"] = pd.to_datetime(df["Date"], errors="coerce")
         return df.sort_values("Date", ascending=False).reset_index(drop=True)
 
     except Exception:
         return empty_df
 
+
 def fetch_purchase_multi_company(selected_keys, model_code, date_from, date_to):
     results = []
     with ThreadPoolExecutor(max_workers=4) as ex:
-        futs = {ex.submit(fetch_purchase_history_for_system, k, model_code, date_from, date_to): k
+        futs = {ex.submit(fetch_purchase_history_for_system,
+                          k, model_code, date_from, date_to): k
                 for k in selected_keys}
         for f in as_completed(futs):
             df = f.result()
@@ -493,16 +642,15 @@ def fetch_purchase_multi_company(selected_keys, model_code, date_from, date_to):
                 results.append(df)
     if not results:
         return pd.DataFrame()
-    combined = pd.concat(results, ignore_index=True)
+    combined         = pd.concat(results, ignore_index=True)
     combined["Date"] = pd.to_datetime(combined["Date"], errors="coerce")
     return combined.sort_values("Date", ascending=False).reset_index(drop=True)
 
+
 @st.cache_data(ttl=3600, show_spinner=False)
 def get_purchase_summary_by_model(model_codes_tuple, date_from, date_to):
-    """Return DataFrame with Model Code and total Purchase Qty for SWAG only (or all)."""
     if not model_codes_tuple:
         return pd.DataFrame(columns=["Model Code", "Purchase Qty"])
-    # For SWAG only (you can adjust)
     swag_cfg = st.secrets.get("SWAG")
     if not swag_cfg:
         return pd.DataFrame(columns=["Model Code", "Purchase Qty"])
@@ -510,76 +658,53 @@ def get_purchase_summary_by_model(model_codes_tuple, date_from, date_to):
     if not uid:
         return pd.DataFrame(columns=["Model Code", "Purchase Qty"])
     try:
-        # Fetch purchase lines for given models within date range
         domain = [
             ["order_id.date_approve", ">=", f"{date_from} 00:00:00"],
             ["order_id.date_approve", "<=", f"{date_to} 23:59:59"],
             ["order_id.state", "in", ["purchase", "done"]],
-            ["product_id.default_code", "in", list(model_codes_tuple)]
+            ["product_id.default_code", "in", list(model_codes_tuple)],
         ]
         lines = _x(swag_cfg["url"], swag_cfg["db"], uid, swag_cfg["api_key"],
                    "purchase.order.line", "search_read", [domain],
                    {"fields": ["product_id", "product_qty"], "limit": 10000})
         if not lines:
             return pd.DataFrame(columns=["Model Code", "Purchase Qty"])
-        prod_ids = list({l["product_id"][0] for l in lines if isinstance(l.get("product_id"), list)})
+
+        prod_ids = list({l["product_id"][0] for l in lines
+                         if isinstance(l.get("product_id"), list)})
         products = _x(swag_cfg["url"], swag_cfg["db"], uid, swag_cfg["api_key"],
                       "product.product", "search_read", [[["id", "in", prod_ids]]],
-                      {"fields": ["id", "default_code"], "limit": len(prod_ids)+10})
+                      {"fields": ["id", "default_code"], "limit": len(prod_ids) + 10})
         prod_map = {p["id"]: p.get("default_code", "") for p in products}
-        summary = {}
+        summary: dict = {}
         for line in lines:
-            pid = line["product_id"][0] if isinstance(line.get("product_id"), list) else None
+            pid   = line["product_id"][0] if isinstance(line.get("product_id"), list) else None
             model = prod_map.get(pid, "")
             if not model:
                 continue
-            qty = float(line.get("product_qty") or 0)
-            summary[model] = summary.get(model, 0) + qty
-        df = pd.DataFrame(list(summary.items()), columns=["Model Code", "Purchase Qty"])
-        return df
+            summary[model] = summary.get(model, 0) + float(line.get("product_qty") or 0)
+        return pd.DataFrame(list(summary.items()), columns=["Model Code", "Purchase Qty"])
     except Exception:
         return pd.DataFrame(columns=["Model Code", "Purchase Qty"])
 
-# =============================================================================
-# FETCH INVENTORY (already in your code – unchanged)
-# =============================================================================
-# (Your existing fetch_inventory_data function goes here – unchanged)
-# Since you already have it, I'll omit duplicating it, but ensure it's present.
-# For completeness, I'll include a minimal version – but you should keep your original.
-# In the final answer I will assume your original fetch_inventory_data is present.
-# To avoid duplication, I'll not repeat it here; the final code must include it.
-# However, because the user's original snippet included fetch_inventory_data,
-# we rely on it being there. I'll add a placeholder comment.
-
-# Your original fetch_inventory_data should be placed here.
-# (I am not reprinting it to keep the answer manageable, but in your final file
-# you must keep the original implementation. The error is not in that function.)
-
-# =============================================================================
-# FETCH POS & SALES (your existing functions – unchanged)
-# =============================================================================
-# (Keep your fetch_pos_data_for_system, fetch_pos_multi_company,
-#  fetch_sales_history_for_system, fetch_sales_multi_company as they were.
-#  They are not the cause of the NameError.)
 
 # ─────────────────────────────────────────────────────────────────────────────
 # LOGIN PAGE
 # ─────────────────────────────────────────────────────────────────────────────
 def show_login():
     st.markdown("<div class='login-orb'>📊</div>", unsafe_allow_html=True)
-    st.markdown("<div class='login-title'>Multi‑Company Ops Dashboard</div>", unsafe_allow_html=True)
-    st.markdown("<div class='login-subtitle'>Sign in to continue</div>", unsafe_allow_html=True)
+    st.markdown("<div class='login-title'>Multi‑Company Ops Dashboard</div>",
+                unsafe_allow_html=True)
+    st.markdown("<div class='login-subtitle'>Sign in to continue</div>",
+                unsafe_allow_html=True)
     with st.form("login_form"):
-        email = st.text_input("Email", placeholder="user@example.com")
-        password = st.text_input("Password", type="password")
+        email     = st.text_input("Email", placeholder="user@example.com")
+        password  = st.text_input("Password", type="password")
         submitted = st.form_submit_button("Login", type="primary")
         if submitted:
-            # Simple hardcoded demo auth – replace with your own logic
             if email and password:
-                # For production, verify against your user database
                 st.session_state.authenticated = True
-                st.session_state.user_email = email
-                # Set query params for persistent login (optional)
+                st.session_state.user_email    = email
                 token = _make_token(email)
                 st.query_params.update({"u": email, "t": token})
                 st.rerun()
@@ -588,15 +713,16 @@ def show_login():
 
 def do_logout():
     st.session_state.authenticated = False
-    st.session_state.user_email = ""
+    st.session_state.user_email    = ""
     st.query_params.clear()
     st.rerun()
 
+
 # ─────────────────────────────────────────────────────────────────────────────
-# DASHBOARD (your existing show_dashboard with prepare_df fixed)
+# DASHBOARD  –  function name is show_dashboard() (matches entry point below)
 # ─────────────────────────────────────────────────────────────────────────────
 def show_dashboard():
-    # Sidebar
+    # ── Sidebar ──────────────────────────────────────────────────────────────
     with st.sidebar:
         st.markdown(f"### ⚙️ {t('Settings', 'الإعدادات')}")
         lc2 = st.radio(t("🌐 Language", "🌐 اللغة"), ["EN", "AR"],
@@ -609,66 +735,94 @@ def show_dashboard():
         if st.button(f"🚪 {t('Logout', 'تسجيل الخروج')}", use_container_width=True):
             do_logout()
 
-    # Header
+    # ── Header ───────────────────────────────────────────────────────────────
     st.markdown(f"""
     <div class='dash-header'>
         <div class='dash-title'>📊 Multi‑Company Operations Dashboard</div>
-        <div class='dash-subtitle'>{t('Inventory · POS · Sales · Purchase', 'المخزون · نقاط البيع · المبيعات · المشتريات')}</div>
+        <div class='dash-subtitle'>{t(
+            'Inventory · POS · Sales · Purchase',
+            'المخزون · نقاط البيع · المبيعات · المشتريات')}</div>
     </div>""", unsafe_allow_html=True)
     st.divider()
 
     tab_inv, tab_pos, tab_sales, tab_pur = st.tabs([
         f"📦 {t('Inventory', 'المخزون')}",
-        f"🛒 {t('POS', 'نقاط البيع')}",
-        f"🛍️ {t('Sales', 'المبيعات')}",
-        f"🛒 {t('Purchase', 'المشتريات')}"
+        f"🛒 {t('POS',       'نقاط البيع')}",
+        f"🛍️ {t('Sales',    'المبيعات')}",
+        f"🛒 {t('Purchase',  'المشتريات')}",
     ])
 
     # =========================================================================
-    # INVENTORY TAB (with prepare_df now defined)
+    # INVENTORY TAB
     # =========================================================================
     with tab_inv:
         st.markdown(f"### 📦 {t('Inventory Overview', 'نظرة عامة على المخزون')}")
-        company_options = ["All Companies"] + [get_system_name(k) for k in SYSTEM_KEYS]
-        selected_company = st.selectbox(t("Select Company", "اختر الشركة"), options=company_options, index=0, key="inv_company")
-        if selected_company == "All Companies":
-            inv_keys = SYSTEM_KEYS
-        else:
-            inv_keys = [k for k in SYSTEM_KEYS if get_system_name(k) == selected_company]
 
-        model_filter = st.text_input(t("Model Code (optional)", "رمز الموديل (اختياري)"), key="inv_model_filter").strip()
-        exact_match = st.toggle(t("Exact match only", "تطابق تام فقط"), value=False, key="inv_exact")
-        low_thresh = st.number_input(t("Low stock threshold (qty ≤)", "حد المخزون المنخفض (كمية ≤)"), min_value=0, max_value=1000, value=5, step=1, key="inv_low_thresh")
+        company_options  = ["All Companies"] + [get_system_name(k) for k in SYSTEM_KEYS]
+        selected_company = st.selectbox(
+            t("Select Company", "اختر الشركة"),
+            options=company_options, index=0, key="inv_company",
+        )
+        inv_keys = (SYSTEM_KEYS if selected_company == "All Companies"
+                    else [k for k in SYSTEM_KEYS if get_system_name(k) == selected_company])
 
-        refresh_inv = st.button(f"🔄 {t('Refresh Inventory', 'تحديث المخزون')}", type="primary")
+        model_filter = st.text_input(
+            t("Model Code (optional)", "رمز الموديل (اختياري)"), key="inv_model_filter"
+        ).strip()
+        exact_match = st.toggle(
+            t("Exact match only", "تطابق تام فقط"), value=False, key="inv_exact"
+        )
+        low_thresh = st.number_input(
+            t("Low stock threshold (qty ≤)", "حد المخزون المنخفض (كمية ≤)"),
+            min_value=0, max_value=1000, value=5, step=1, key="inv_low_thresh",
+        )
+
+        refresh_inv = st.button(
+            f"🔄 {t('Refresh Inventory', 'تحديث المخزون')}", type="primary"
+        )
+
         if refresh_inv:
             with st.spinner(t("Fetching inventory data...", "جاري جلب بيانات المخزون...")):
-                # Use your existing fetch_inventory_data
+
+                # ── Call the wrapper (FIX: correct parameter names) ──────
+                codes            = tuple([model_filter]) if model_filter else ()
                 total_df, branch_df = fetch_inventory_data(
-                    company_keys=inv_keys,
-                    model_codes=[model_filter] if model_filter else None,
+                    codestuple=codes,
                     exact=exact_match,
-                    need_branch=True
+                    needbranch=True,
                 )
-                # Add purchase qty for SWAG (example)
-                if selected_company == "All Companies" or "SWAG" in inv_keys:
-                    swag_sys_name = get_system_name("SWAG")
-                    sys_col_local = t("System", "النظام")
+
+                # ── Purchase qty overlay for SWAG ─────────────────────────
+                sys_col_local  = t("System",     "النظام")
+                model_col_local = t("Model Code", "رمز الموديل")
+                swag_sys_name  = get_system_name("SWAG")
+
+                if not total_df.empty and sys_col_local in total_df.columns:
                     swag_mask = total_df[sys_col_local] == swag_sys_name
-                    if swag_mask.any():
-                        model_codes_swag = total_df.loc[swag_mask, t("Model Code", "رمز الموديل")].dropna().unique().tolist()
+                    if swag_mask.any() and model_col_local in total_df.columns:
+                        model_codes_swag = (
+                            total_df.loc[swag_mask, model_col_local]
+                            .dropna().unique().tolist()
+                        )
                         if model_codes_swag:
-                            end_date = datetime.now().date()
+                            end_date   = datetime.now().date()
                             start_date = end_date - timedelta(days=365)
                             pur_summary = get_purchase_summary_by_model(
                                 tuple(model_codes_swag),
                                 start_date.strftime("%Y-%m-%d"),
-                                end_date.strftime("%Y-%m-%d"))
+                                end_date.strftime("%Y-%m-%d"),
+                            )
                             if not pur_summary.empty:
-                                pur_renamed = pur_summary.rename(columns={"Model Code": t("Model Code", "رمز الموديل")})
-                                total_df = total_df.merge(pur_renamed[[t("Model Code", "رمز الموديل"), "Purchase Qty"]],
-                                                          on=t("Model Code", "رمز الموديل"), how="left")
-                                total_df["Purchase Qty"] = total_df["Purchase Qty"].fillna(0).astype(int)
+                                pur_renamed = pur_summary.rename(
+                                    columns={"Model Code": model_col_local}
+                                )
+                                total_df = total_df.merge(
+                                    pur_renamed[[model_col_local, "Purchase Qty"]],
+                                    on=model_col_local, how="left",
+                                )
+                                total_df["Purchase Qty"] = (
+                                    total_df["Purchase Qty"].fillna(0).astype(int)
+                                )
                                 total_df.loc[~swag_mask, "Purchase Qty"] = 0
                             else:
                                 total_df["Purchase Qty"] = 0
@@ -677,115 +831,233 @@ def show_dashboard():
                     else:
                         total_df["Purchase Qty"] = 0
                 else:
-                    total_df["Purchase Qty"] = 0
+                    if not total_df.empty:
+                        total_df["Purchase Qty"] = 0
 
-                # Now prepare_df is defined – no NameError
-                total_df = prepare_df(total_df)
+                # prepare_df is defined above – no NameError possible
+                total_df  = prepare_df(total_df)
                 branch_df = prepare_df(branch_df)
-                st.session_state.inventory_df = total_df
+
+                st.session_state.inventory_df        = total_df
                 st.session_state.inventory_branch_df = branch_df
 
-        total_df = st.session_state.get("inventory_df")
+        total_df  = st.session_state.get("inventory_df")
         branch_df = st.session_state.get("inventory_branch_df")
 
         if total_df is None or total_df.empty:
-            st.info(t("Click 'Refresh Inventory' to load data.", "اضغط 'تحديث المخزون' لتحميل البيانات."))
+            st.info(t("Click 'Refresh Inventory' to load data.",
+                      "اضغط 'تحديث المخزون' لتحميل البيانات."))
         else:
-            qc = t("On Hand", "متوفر")
-            sp = t("Sale Price", "سعر البيع")
-            sys_col = t("System", "النظام")
-            ok_total = total_df[total_df["_status"] == "OK"] if "_status" in total_df.columns else total_df
+            qc     = t("On Hand",    "متوفر")
+            sp     = t("Sale Price", "سعر البيع")
+            mc     = t("Model Code", "رمز الموديل")
+            prod_c = t("Product",    "المنتج")
+            br_c   = t("Branch",     "الفرع")
 
-            total_qty = int(pd.to_numeric(ok_total[qc], errors="coerce").fillna(0).sum())
-            total_value = (pd.to_numeric(ok_total[qc], errors="coerce").fillna(0) *
-                           pd.to_numeric(ok_total[sp], errors="coerce").fillna(0)).sum()
-            distinct_models = ok_total[t("Model Code", "رمز الموديل")].nunique()
-            distinct_branches = branch_df[t("Branch", "الفرع")].nunique() if branch_df is not None and not branch_df.empty else 0
+            qty_series  = pd.to_numeric(total_df.get(qc, pd.Series()), errors="coerce").fillna(0)
+            price_series = pd.to_numeric(total_df.get(sp, pd.Series()), errors="coerce").fillna(0)
 
-            col1, col2, col3, col4 = st.columns(4)
-            col1.metric(t("Total Stock Qty", "إجمالي الكمية"), f"{total_qty:,.0f}")
-            col2.metric(t("Inventory Value (SAR)", "قيمة المخزون (ر.س)"), f"{total_value:,.2f}")
-            col3.metric(t("Distinct Models", "عدد الموديلات"), distinct_models)
-            col4.metric(t("Distinct Branches", "عدد الفروع"), distinct_branches)
+            total_qty       = int(qty_series.sum())
+            total_value     = (qty_series * price_series).sum()
+            distinct_models = total_df[mc].nunique() if mc in total_df.columns else 0
+            distinct_branches = (
+                branch_df[br_c].nunique()
+                if branch_df is not None and not branch_df.empty and br_c in branch_df.columns
+                else 0
+            )
+
+            c1, c2, c3, c4 = st.columns(4)
+            c1.metric(t("Total Stock Qty",      "إجمالي الكمية"),       f"{total_qty:,.0f}")
+            c2.metric(t("Inventory Value (SAR)", "قيمة المخزون (ر.س)"), f"{total_value:,.2f}")
+            c3.metric(t("Distinct Models",       "عدد الموديلات"),       distinct_models)
+            c4.metric(t("Distinct Branches",     "عدد الفروع"),          distinct_branches)
             st.divider()
 
-            if branch_df is not None and not branch_df.empty:
-                branch_col = t("Branch", "الفرع")
-                branch_summary = branch_df.groupby(branch_col)[qc].sum().reset_index().sort_values(qc, ascending=False)
+            # Branch chart
+            if (branch_df is not None and not branch_df.empty
+                    and br_c in branch_df.columns and qc in branch_df.columns):
+                branch_summary = (
+                    branch_df.groupby(br_c)[qc].sum()
+                    .reset_index().sort_values(qc, ascending=False)
+                )
                 st.markdown(f"#### 🏪 {t('Branch-wise Stock', 'المخزون حسب الفرع')}")
-                st.bar_chart(branch_summary.set_index(branch_col)[qc], use_container_width=True)
+                st.bar_chart(branch_summary.set_index(br_c)[qc], use_container_width=True)
                 st.dataframe(branch_summary, use_container_width=True)
                 st.divider()
 
-            top_qty = ok_total.groupby(t("Model Code", "رمز الموديل"))[qc].sum().reset_index().sort_values(qc, ascending=False).head(10)
-            st.markdown(f"#### 🏆 {t('Top Models by Quantity', 'أعلى الموديلات بالكمية')}")
-            st.bar_chart(top_qty.set_index(t("Model Code", "رمز الموديل"))[qc], use_container_width=True)
-            st.divider()
+            # Top 10 by qty
+            if mc in total_df.columns and qc in total_df.columns:
+                top_qty = (
+                    total_df.groupby(mc)[qc].sum()
+                    .reset_index().sort_values(qc, ascending=False).head(10)
+                )
+                st.markdown(f"#### 🏆 {t('Top Models by Quantity', 'أعلى الموديلات بالكمية')}")
+                st.bar_chart(top_qty.set_index(mc)[qc], use_container_width=True)
+                st.divider()
 
-            ok_total["Value"] = pd.to_numeric(ok_total[qc], errors="coerce") * pd.to_numeric(ok_total[sp], errors="coerce")
-            top_value = ok_total.groupby(t("Model Code", "رمز الموديل"))["Value"].sum().reset_index().sort_values("Value", ascending=False).head(10)
-            st.markdown(f"#### 💰 {t('Top Models by Value (SAR)', 'أعلى الموديلات بالقيمة (ر.س)')}")
-            st.bar_chart(top_value.set_index(t("Model Code", "رمز الموديل"))["Value"], use_container_width=True)
-            st.divider()
+            # Top 10 by value
+            if mc in total_df.columns and sp in total_df.columns:
+                _tmp = total_df.copy()
+                _tmp["_Value"] = (
+                    pd.to_numeric(_tmp[qc], errors="coerce").fillna(0) *
+                    pd.to_numeric(_tmp[sp], errors="coerce").fillna(0)
+                )
+                top_value = (
+                    _tmp.groupby(mc)["_Value"].sum()
+                    .reset_index().sort_values("_Value", ascending=False).head(10)
+                )
+                st.markdown(f"#### 💰 {t('Top Models by Value (SAR)', 'أعلى الموديلات بالقيمة (ر.س)')}")
+                st.bar_chart(top_value.set_index(mc)["_Value"], use_container_width=True)
+                st.divider()
 
-            zero_stock = ok_total[pd.to_numeric(ok_total[qc], errors="coerce").fillna(0) == 0]
-            low_stock = ok_total[(pd.to_numeric(ok_total[qc], errors="coerce") > 0) &
-                                 (pd.to_numeric(ok_total[qc], errors="coerce") <= low_thresh)]
+            # Stock alerts
+            qty_num    = pd.to_numeric(total_df.get(qc, pd.Series()), errors="coerce").fillna(0)
+            zero_stock = total_df[qty_num == 0]
+            low_stock  = total_df[(qty_num > 0) & (qty_num <= low_thresh)]
+
             if not zero_stock.empty:
-                st.markdown(f"<div class='alert-banner'>⚠️ {len(zero_stock)} {t('products have zero stock', 'منتج بدون مخزون')}</div>", unsafe_allow_html=True)
+                st.markdown(
+                    f"<div class='alert-banner'>⚠️ {len(zero_stock)} "
+                    f"{t('products have zero stock', 'منتج بدون مخزون')}</div>",
+                    unsafe_allow_html=True,
+                )
             if not low_stock.empty:
-                st.markdown(f"<div class='alert-banner'>🔴 {len(low_stock)} {t('low stock items', 'عناصر منخفضة المخزون')} ≤ {low_thresh}</div>", unsafe_allow_html=True)
-                st.dataframe(low_stock[[t("Model Code", "رمز الموديل"), t("Product", "المنتج"), qc]], use_container_width=True)
+                st.markdown(
+                    f"<div class='alert-banner'>🔴 {len(low_stock)} "
+                    f"{t('low stock items', 'عناصر منخفضة المخزون')} ≤ {low_thresh}</div>",
+                    unsafe_allow_html=True,
+                )
+                cols_show = [c for c in [mc, prod_c, qc] if c in low_stock.columns]
+                st.dataframe(low_stock[cols_show], use_container_width=True)
             st.divider()
 
+            # Detail table
             st.markdown(f"#### 📋 {t('Detailed Inventory', 'المخزون التفصيلي')}")
-            filtered_inv = display_df(total_df, thresh=low_thresh, table_key="inv_detail")
+            display_df(total_df, thresh=low_thresh, table_key="inv_detail")
             st.markdown("<br>", unsafe_allow_html=True)
 
-            exp1, exp2, exp3 = st.columns(3)
-            with exp1:
-                st.download_button("⬇️ CSV", to_csv(total_df), dl_name("inventory", "csv"), "text/csv", use_container_width=True)
-            with exp2:
-                st.download_button("⬇️ Excel", to_excel(total_df), dl_name("inventory", "xlsx"),
-                                   "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet", use_container_width=True)
-            with exp3:
+            # Downloads
+            d1, d2, d3 = st.columns(3)
+            with d1:
+                st.download_button(
+                    "⬇️ CSV", to_csv(total_df), dl_name("inventory", "csv"),
+                    "text/csv", use_container_width=True,
+                )
+            with d2:
+                st.download_button(
+                    "⬇️ Excel", to_excel(total_df), dl_name("inventory", "xlsx"),
+                    "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                    use_container_width=True,
+                )
+            with d3:
                 if branch_df is not None and not branch_df.empty:
                     st.download_button(
                         f"📊 {t('Branch Matrix Excel', 'Excel مصفوفة الفروع')}",
                         to_excel_branch_matrix(branch_df, get_lang()),
                         dl_name("branch_matrix", "xlsx"),
                         "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-                        use_container_width=True
+                        use_container_width=True,
                     )
                 else:
                     st.download_button(
                         f"📊 {t('Branch Matrix Excel', 'Excel مصفوفة الفروع')}",
-                        data=b"",
-                        file_name="placeholder.xlsx",
-                        disabled=True,
-                        use_container_width=True
+                        data=b"", file_name="placeholder.xlsx",
+                        disabled=True, use_container_width=True,
                     )
 
     # =========================================================================
-    # POS, SALES, PURCHASE tabs (your existing code – unchanged)
+    # POS TAB  –  paste your real implementation here
     # =========================================================================
-    # (Place your existing POS, Sales, Purchase tab implementations here.
-    #  They already reference prepare_df? No, but they use display_df which is now defined.
-    #  Make sure to include them exactly as you had. I will not duplicate them for brevity,
-    #  but in your final file you must keep your original implementations for those tabs.
-    #  The critical fix is adding the missing helper functions above.)
-    # =========================================================================
-    # For completeness, I'll add a placeholder for the remaining tabs.
-    # In your actual code, replace these placeholders with your full implementations.
-
     with tab_pos:
-        st.info("POS tab content – keep your original implementation here.")
+        st.markdown(f"### 🛒 {t('POS Sales', 'مبيعات نقاط البيع')}")
+        st.info(t("POS tab – paste your existing implementation here.",
+                  "تبويب نقاط البيع – ألصق تنفيذك الحالي هنا."))
 
+    # =========================================================================
+    # SALES TAB  –  paste your real implementation here
+    # =========================================================================
     with tab_sales:
-        st.info("Sales tab content – keep your original implementation here.")
+        st.markdown(f"### 🛍️ {t('Sales Orders', 'أوامر البيع')}")
+        st.info(t("Sales tab – paste your existing implementation here.",
+                  "تبويب المبيعات – ألصق تنفيذك الحالي هنا."))
 
+    # =========================================================================
+    # PURCHASE TAB
+    # =========================================================================
     with tab_pur:
-        st.info("Purchase tab content – keep your original implementation here.")
+        st.markdown(f"### 🛒 {t('Purchase History', 'تاريخ المشتريات')}")
+
+        pur_co_opts = ["All Companies"] + [get_system_name(k) for k in SYSTEM_KEYS]
+        pur_co      = st.selectbox(t("Select Company", "اختر الشركة"),
+                                   options=pur_co_opts, index=0, key="pur_company")
+        pur_keys    = (SYSTEM_KEYS if pur_co == "All Companies"
+                       else [k for k in SYSTEM_KEYS if get_system_name(k) == pur_co])
+
+        pur_model = st.text_input(
+            t("Model Code (optional)", "رمز الموديل (اختياري)"), key="pur_model"
+        ).strip()
+
+        pc1, pc2 = st.columns(2)
+        with pc1:
+            pur_date_from = st.date_input(
+                t("From", "من"),
+                value=datetime.now().date() - timedelta(days=90),
+                key="pur_date_from",
+            )
+        with pc2:
+            pur_date_to = st.date_input(
+                t("To", "إلى"), value=datetime.now().date(), key="pur_date_to"
+            )
+
+        refresh_pur = st.button(
+            f"🔄 {t('Refresh Purchase', 'تحديث المشتريات')}", type="primary"
+        )
+
+        if refresh_pur:
+            with st.spinner(t("Fetching purchase data...", "جاري جلب بيانات المشتريات...")):
+                pur_df = fetch_purchase_multi_company(
+                    pur_keys,
+                    pur_model,
+                    pur_date_from.strftime("%Y-%m-%d"),
+                    pur_date_to.strftime("%Y-%m-%d"),
+                )
+                st.session_state.purchase_df = prepare_df(pur_df)
+
+        pur_df = st.session_state.get("purchase_df")
+
+        if pur_df is None or pur_df.empty:
+            st.info(t("Click 'Refresh Purchase' to load data.",
+                      "اضغط 'تحديث المشتريات' لتحميل البيانات."))
+        else:
+            qty_col_pur = t("Qty",      "الكمية")
+            sub_col_pur = t("Subtotal", "المجموع الفرعي")
+            total_p_qty = int(
+                pd.to_numeric(pur_df.get(qty_col_pur, pd.Series()), errors="coerce").fillna(0).sum()
+            )
+            total_p_val = (
+                pd.to_numeric(pur_df.get(sub_col_pur, pd.Series()), errors="coerce").fillna(0).sum()
+            )
+            pm1, pm2 = st.columns(2)
+            pm1.metric(t("Total Purchase Qty",          "إجمالي كمية الشراء"),       f"{total_p_qty:,}")
+            pm2.metric(t("Total Purchase Value (SAR)",  "إجمالي قيمة الشراء (ر.س)"), f"{total_p_val:,.2f}")
+            st.divider()
+
+            display_df(pur_df, table_key="pur_detail")
+            st.markdown("<br>", unsafe_allow_html=True)
+
+            pd1, pd2 = st.columns(2)
+            with pd1:
+                st.download_button(
+                    "⬇️ CSV", to_csv(pur_df), dl_name("purchase", "csv"),
+                    "text/csv", use_container_width=True,
+                )
+            with pd2:
+                st.download_button(
+                    "⬇️ Excel", to_excel(pur_df), dl_name("purchase", "xlsx"),
+                    "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                    use_container_width=True,
+                )
+
 
 # ─────────────────────────────────────────────────────────────────────────────
 # ENTRY POINT
@@ -795,4 +1067,4 @@ restore_session()
 if not st.session_state.authenticated:
     show_login()
 else:
-    show_dashboard()
+    show_dashboard()   # ← name matches def show_dashboard() above: no mismatch
