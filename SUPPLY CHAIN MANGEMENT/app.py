@@ -1,4 +1,4 @@
- app.py – PREMIUM EXECUTIVE DASHBOARD
+# app.py – PREMIUM EXECUTIVE DASHBOARD
 # Multi-Company Odoo Operations Dashboard
 # Board-of-Directors Level Analytics
 # Features: Inventory, POS, Sales, Purchase, Premium Viz, Theme Switcher, AI Insights, Pagination
@@ -18,8 +18,8 @@ import plotly.graph_objects as go
 import streamlit as st
 
 st.set_page_config(
-    page_title="Swag  Multi -data dasbaord ",
-    page_icon="",
+    page_title="Swag Executive Dashboard",
+    page_icon="💎",
     layout="wide",
     initial_sidebar_state="expanded",
 )
@@ -1726,7 +1726,7 @@ def show_dashboard():
     # ── HEADER ────────────────────────────────────────────────────────────────
     st.markdown(f"""
     <div class='dash-header'>
-        <div class='dash-title'>SWAG DASBAROD FOR MUTLI COMPANY </div>
+        <div class='dash-title'>💎 Executive Operations Dashboard</div>
         <div class='dash-subtitle'>{t('Multi-Company · Inventory · POS · Sales · Purchase · AI Insights','متعدد الشركات · المخزون · نقاط البيع · المبيعات · المشتريات · تحليلات ذكية')}</div>
     </div>""", unsafe_allow_html=True)
     st.divider()
