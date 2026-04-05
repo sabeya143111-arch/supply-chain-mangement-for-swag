@@ -16,7 +16,7 @@ import plotly.graph_objects as go
 import streamlit as st
 
 st.set_page_config(
-    page_title="Multi‑Company Ops Dashboard",
+    page_title=" Swag Multi‑Company Ops Dashboard",
     page_icon="📊",
     layout="wide",
     initial_sidebar_state="expanded",
