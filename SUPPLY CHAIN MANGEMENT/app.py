@@ -138,8 +138,13 @@ THEMES = {
     },
 }
 
+# FIX: Validate theme exists and fallback to default
 def get_theme():
-    return st.session_state.get("theme", "Dark Executive")
+    theme = st.session_state.get("theme", "Dark Executive")
+    if theme not in THEMES:
+        theme = "Dark Executive"
+        st.session_state.theme = theme
+    return theme
 
 def th(key):
     return THEMES[get_theme()][key]
@@ -517,11 +522,11 @@ def render_paginated_table(df, page_key, rows_per_page=ROWS_PER_PAGE):
     # Render table
     table_css = f"""
     <div class='dataframe-wrap'><table>
-    <thead><tr>{"".join(f"<th>{c}</th>" for c in page_df.columns)}</tr></thead>
+    <thead><tr>{"".join(f"<th>{c}</th>" for c in page_df.columns)}</thead>
     <tbody>
     """
     for _, row in page_df.iterrows():
-        table_css += "<tr>" + "".join(f"<td>{v}</td>" for v in row.values) + "</tr>"
+        table_css += "<tr>" + "".join(f"<td>{v}</td>" for v in row.values) + "<tr>"
     table_css += "</tbody></table></div>"
     st.markdown(table_css, unsafe_allow_html=True)
 
@@ -1647,6 +1652,10 @@ def do_logout():
 # ─────────────────────────────────────────────────────────────────────────────
 def show_dashboard():
     theme = get_theme()
+    # Extra safety – ensure theme is valid (get_theme already fixed, but double-check)
+    if theme not in THEMES:
+        theme = "Dark Executive"
+        st.session_state.theme = theme
     t_dict = THEMES[theme]
     st.markdown(build_css(t_dict), unsafe_allow_html=True)
 
