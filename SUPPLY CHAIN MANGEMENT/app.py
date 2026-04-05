@@ -1,16 +1,15 @@
-# app.py – PREMIUM EXECUTIVE DASHBOARD (FULLY FIXED VERSION)
+# app.py – PREMIUM EXECUTIVE DASHBOARD (FULLY PATCHED VERSION)
 # Multi-Company Odoo Operations Dashboard
 # Board-of-Directors Level Analytics
 # Features: Inventory, POS, Sales, Purchase, Premium Viz, Theme Switcher, AI Insights, Pagination
-# BUGS FIXED:
-#   1. Arabic mode crash — all column refs use t() variables
-#   2. Inventory loading — session_state assignment verified
-#   3. Sales tab null check & t() columns
-#   4. Purchase tab null check & t() columns
-#   5. to_excel_branch_matrix — return b""
-#   6. Paginated table HTML — closing </tr> tag
-#   7. get_purchase_summary_by_model — all SYSTEM_KEYS
-#   8. Language cache — clear data on lang switch
+# PATCHES APPLIED:
+#   1. safe_plotly_color / th_color helpers added
+#   2. All Plotly color usages replaced with th_color()
+#   3. Branch matrix export returns b"" safely in all paths
+#   4. Reset filter buttons use safe del pattern (no direct widget key assignment)
+#   5. Table HTML rebuilt safely with proper structure
+#   6. Arabic/English column safety maintained throughout
+#   7. Original bug fixes from prior version retained
 
 import io
 import re
@@ -156,6 +155,25 @@ def get_theme():
 
 def th(key):
     return THEMES[get_theme()][key]
+
+# ─────────────────────────────────────────────────────────────────────────────
+# PATCH 1: safe_plotly_color / th_color helpers
+# ─────────────────────────────────────────────────────────────────────────────
+def safe_plotly_color(value, fallback="#667eea"):
+    """Extract a valid hex color from a theme value (which may be a gradient string)."""
+    value = str(value or "").strip()
+    # Direct match: plain hex color
+    if re.fullmatch(r"#([0-9a-fA-F]{3}|[0-9a-fA-F]{6})", value):
+        return value
+    # Search for first hex color within a gradient or other string
+    m = re.search(r"#([0-9a-fA-F]{3}|[0-9a-fA-F]{6})", value)
+    if m:
+        return f"#{m.group(1)}"
+    return fallback
+
+def th_color(key, fallback="#667eea"):
+    """Get a safe, valid hex color from the current theme."""
+    return safe_plotly_color(th(key), fallback)
 
 def build_css(t_dict):
     return f"""
@@ -489,11 +507,11 @@ def to_excel(df):
 
 def to_excel_branch_matrix(branch_df):
     """
-    BUG FIX #5: was returning undefined `b` — now correctly returns b"" on failure.
+    PATCH 3: Returns b"" safely in all error paths.
     Columns are already localized; use t() variables consistently.
     """
     if branch_df is None or branch_df.empty:
-        return b""  # FIX: was `return b` (undefined) → `return b""`
+        return b""
 
     # branch_df may already be localized; localize_columns is idempotent for that case
     branch_df = localize_columns(branch_df)
@@ -503,31 +521,34 @@ def to_excel_branch_matrix(branch_df):
     qty_col    = t("On Hand", "متوفر")
 
     if branch_col not in branch_df.columns or model_col not in branch_df.columns:
-        return b""  # FIX: safe fallback
+        return b""
 
-    pivot = branch_df.pivot_table(
-        index=model_col, columns=branch_col, values=qty_col,
-        aggfunc="sum", fill_value=0,
-    )
-    output = io.BytesIO()
-    with pd.ExcelWriter(output, engine="openpyxl") as writer:
-        pivot.to_excel(writer, sheet_name="Branch_Matrix")
-        try:
-            from openpyxl.styles import Font, Alignment, PatternFill
-            ws = writer.sheets["Branch_Matrix"]
-            for cell in ws[1]:
-                cell.font = Font(bold=True, color="FFFFFF")
-                cell.fill = PatternFill(start_color="4F46E5", end_color="4F46E5", fill_type="solid")
-                cell.alignment = Alignment(horizontal="center")
-        except Exception:
-            pass
-    return output.getvalue()
+    try:
+        pivot = branch_df.pivot_table(
+            index=model_col, columns=branch_col, values=qty_col,
+            aggfunc="sum", fill_value=0,
+        )
+        output = io.BytesIO()
+        with pd.ExcelWriter(output, engine="openpyxl") as writer:
+            pivot.to_excel(writer, sheet_name="Branch_Matrix")
+            try:
+                from openpyxl.styles import Font, Alignment, PatternFill
+                ws = writer.sheets["Branch_Matrix"]
+                for cell in ws[1]:
+                    cell.font = Font(bold=True, color="FFFFFF")
+                    cell.fill = PatternFill(start_color="4F46E5", end_color="4F46E5", fill_type="solid")
+                    cell.alignment = Alignment(horizontal="center")
+            except Exception:
+                pass
+        return output.getvalue()
+    except Exception:
+        return b""
 
 def dl_name(prefix, ext):
     return f"{prefix}_{datetime.now().strftime('%Y%m%d_%H%M%S')}.{ext}"
 
 # ─────────────────────────────────────────────────────────────────────────────
-# PAGINATED TABLE  (BUG FIX #6: closing </tr> tag)
+# PATCH 5: PAGINATED TABLE — safe HTML building
 # ─────────────────────────────────────────────────────────────────────────────
 def render_paginated_table(df, page_key, rows_per_page=ROWS_PER_PAGE):
     if df is None or df.empty:
@@ -554,20 +575,19 @@ def render_paginated_table(df, page_key, rows_per_page=ROWS_PER_PAGE):
     end   = min(start + rows_per_page, total_rows)
     page_df = df.iloc[start:end]
 
-    # Build HTML table — BUG FIX #6: was `"</table>"` at end → must be `"</tr>"`
-    table_html = (
-        "<div class='dataframe-wrap'><table>"
-        "<thead><tr>"
-        + "".join(f"<th>{c}</th>" for c in page_df.columns)
-        + "</thead><tbody>"
-    )
+    # PATCH 5: Safe HTML table construction
+    header_html = "".join([f"<th>{c}</th>" for c in page_df.columns])
+    rows_html = ""
     for _, row in page_df.iterrows():
-        table_html += (
-            "<tr>"
-            + "".join(f"<td>{v}</td>" for v in row.values)
-            + "</tr>"   # FIX: was `+ "<tr>"` (duplicate open tag)
-        )
-    table_html += "</tbody></table></div>"
+        rows_html += "<tr>" + "".join([f"<td>{v}</td>" for v in row.values]) + "</tr>"
+    table_html = f"""
+<div class="dataframe-wrap">
+  <table>
+    <thead><tr>{header_html}</tr></thead>
+    <tbody>{rows_html}</tbody>
+  </table>
+</div>
+"""
     st.markdown(table_html, unsafe_allow_html=True)
 
     # Pagination info
@@ -605,7 +625,7 @@ def render_paginated_table(df, page_key, rows_per_page=ROWS_PER_PAGE):
             st.rerun()
 
 # ─────────────────────────────────────────────────────────────────────────────
-# VISUALIZATION ENGINE
+# PATCH 2: VISUALIZATION ENGINE — all Plotly colors via th_color()
 # ─────────────────────────────────────────────────────────────────────────────
 def apply_plotly_theme(fig):
     if fig is None:
@@ -666,8 +686,10 @@ def render_visualization(df, viz_mode, x_col, y_col, label=None, color_col=None)
         return
 
     elif viz_mode == "📊 Column Chart":
+        # PATCH 2: use th_color()
         fig = px.bar(df_agg.head(20), x=x_col, y=y_col, title=label or "",
-                     color=y_col, color_continuous_scale=[colors[0], colors[1]],
+                     color=y_col,
+                     color_continuous_scale=[th_color("accent1", "#667eea"), th_color("accent2", "#f093fb")],
                      template=tmpl, text_auto=".2s")
         fig.update_traces(marker_line_width=0, opacity=0.9)
 
@@ -684,22 +706,29 @@ def render_visualization(df, viz_mode, x_col, y_col, label=None, color_col=None)
                          template=tmpl, color_discrete_sequence=colors, text_auto=".2s")
 
     elif viz_mode == "📉 Horizontal Bar":
+        # PATCH 2: use th_color()
         fig = px.bar(df_agg.head(15), x=y_col, y=x_col, orientation="h",
                      title=label or "", template=tmpl,
-                     color=y_col, color_continuous_scale=[colors[0], colors[1]],
+                     color=y_col,
+                     color_continuous_scale=[th_color("accent1", "#667eea"), th_color("accent2", "#f093fb")],
                      text_auto=".2s")
         fig.update_layout(yaxis=dict(categoryorder="total ascending"))
 
     elif viz_mode == "📈 Line Chart":
+        # PATCH 2: use th_color()
         fig = px.line(df_agg.head(30), x=x_col, y=y_col, title=label or "",
-                      markers=True, template=tmpl, color_discrete_sequence=[colors[0]])
+                      markers=True, template=tmpl,
+                      color_discrete_sequence=[th_color("accent1", "#667eea")])
         fig.update_traces(line_width=3, marker_size=8,
-                          line_color=th("accent1"), marker_color=th("accent2"))
+                          line_color=th_color("accent1", "#667eea"),
+                          marker_color=th_color("accent2", "#f093fb"))
 
     elif viz_mode == "📉 Area Chart":
+        # PATCH 2: use th_color()
+        a1 = th_color("accent1", "#667eea")
         fig = px.area(df_agg.head(30), x=x_col, y=y_col, title=label or "",
-                      template=tmpl, color_discrete_sequence=[th("accent1")])
-        fig.update_traces(fillcolor=f"{th('accent1')}33", line_color=th("accent1"), line_width=2.5)
+                      template=tmpl, color_discrete_sequence=[a1])
+        fig.update_traces(fillcolor=a1 + "33", line_color=a1, line_width=2.5)
 
     elif viz_mode == "🍕 Pie Chart":
         top_n = df_agg.head(10)
@@ -714,10 +743,11 @@ def render_visualization(df, viz_mode, x_col, y_col, label=None, color_col=None)
         fig.update_traces(textposition="inside", textinfo="percent+label")
 
     elif viz_mode == "🔘 Scatter Chart":
+        # PATCH 2: use th_color()
         fig = px.scatter(df_agg.head(30), x=x_col, y=y_col, title=label or "",
                          size=y_col, color=y_col,
-                         color_continuous_scale=[colors[0], colors[1]], template=tmpl,
-                         size_max=50)
+                         color_continuous_scale=[th_color("accent1", "#667eea"), th_color("accent2", "#f093fb")],
+                         template=tmpl, size_max=50)
 
     elif viz_mode == "🗂️ Funnel Chart":
         top_n = df_agg.head(10)
@@ -736,12 +766,14 @@ def render_visualization(df, viz_mode, x_col, y_col, label=None, color_col=None)
         if len(cats) < 3:
             st.info(t("Radar chart needs at least 3 data points.", "يحتاج مخطط الرادار إلى 3 نقاط بيانات على الأقل."))
             return
+        # PATCH 2: use th_color()
+        a1 = th_color("accent1", "#667eea")
         fig = go.Figure(go.Scatterpolar(
             r=vals + [vals[0]],
             theta=cats + [cats[0]],
             fill="toself",
-            fillcolor=f"{th('accent1')}33",
-            line_color=th("accent1"),
+            fillcolor=a1 + "33",
+            line_color=a1,
             line_width=2,
         ))
         fig.update_layout(
@@ -754,9 +786,11 @@ def render_visualization(df, viz_mode, x_col, y_col, label=None, color_col=None)
 
     elif viz_mode == "🔺 Pyramid":
         top_n = df_agg.head(10).sort_values(y_col)
+        # PATCH 2: use th_color()
         fig = px.bar(top_n, x=y_col, y=x_col, orientation="h",
                      title=label or "", template=tmpl,
-                     color=y_col, color_continuous_scale=[colors[0], colors[1]],
+                     color=y_col,
+                     color_continuous_scale=[th_color("accent1", "#667eea"), th_color("accent2", "#f093fb")],
                      text_auto=".2s")
         fig.update_layout(yaxis=dict(categoryorder="total ascending"))
 
@@ -928,14 +962,11 @@ def fetch_inventory_data(codestuple=(), exact=False, lang=None):
     return fetch_inventory_cached(codestuple=codestuple, exact=exact, lang=lang)
 
 # ─────────────────────────────────────────────────────────────────────────────
-# PURCHASE SUMMARY — BUG FIX #7: loop through ALL SYSTEM_KEYS, not just SWAG
+# PURCHASE SUMMARY — loops through ALL SYSTEM_KEYS
 # ─────────────────────────────────────────────────────────────────────────────
 @st.cache_data(ttl=3600, show_spinner=False)
 def get_purchase_summary_by_model(model_codes_tuple, date_from, date_to, lang=None):
-    """
-    BUG FIX #7: Previously only queried SWAG.
-    Now loops through all SYSTEM_KEYS and combines results.
-    """
+    """Queries all SYSTEM_KEYS and combines results."""
     if not model_codes_tuple:
         return pd.DataFrame(columns=["Model Code", "Purchase Qty"])
 
@@ -1782,12 +1813,11 @@ def show_dashboard():
 
         st.divider()
 
-        # BUG FIX #8: clear all data DFs when language changes so cached column names refresh
+        # Language switch — clear all data DFs when language changes
         lc = st.radio(t("🌐 Language", "🌐 اللغة"), ["EN", "AR"],
                       index=0 if get_lang() == "EN" else 1, horizontal=True)
         if lc != get_lang():
             st.session_state.lang                  = lc
-            # Clear all data — column names are baked into the DFs at prepare_df() time
             st.session_state.inventory_df          = None
             st.session_state.inventory_branch_df   = None
             st.session_state.pos_df                = None
@@ -1869,11 +1899,11 @@ def show_dashboard():
         with fc1:
             model_filter = st.text_input(t("Model Code filter (optional)", "فلتر رمز الموديل (اختياري)"), key="inv_model_filter").strip()
         with fc2:
+            # PATCH 4: safe del pattern for inventory reset
             if st.button(t("Reset Filters", "إعادة تعيين"), key="inv_reset_filters"):
-                st.session_state.inv_model_filter = ""
-                st.session_state.inv_company      = t("All Companies", "جميع الشركات")
-                st.session_state.inv_low_thresh   = 5
-                st.session_state.inv_exact        = False
+                for k in ["inv_model_filter", "inv_company", "inv_low_thresh", "inv_exact"]:
+                    if k in st.session_state:
+                        del st.session_state[k]
                 st.rerun()
 
         inv_viz_mode = viz_mode_selector("inv_viz_mode")
@@ -1885,14 +1915,14 @@ def show_dashboard():
                     codestuple=codes, exact=exact_match, lang=st.session_state.lang
                 )
 
-                # ── company filter (on raw english-col DF) ─────────────────
+                # company filter (on raw english-col DF)
                 if raw_total_df is not None and not raw_total_df.empty:
                     if selected_company != t("All Companies", "جميع الشركات"):
                         allowed = {get_system_name(k) for k in inv_keys}
                         if "System" in raw_total_df.columns:
                             raw_total_df = raw_total_df[raw_total_df["System"].isin(allowed)]
 
-                    # Purchase qty overlay — all companies (BUG FIX #7 already in function)
+                    # Purchase qty overlay
                     if "System" in raw_total_df.columns and "Model Code" in raw_total_df.columns and not raw_total_df.empty:
                         mc_vals = raw_total_df["Model Code"].dropna().unique().tolist()
                         if mc_vals:
@@ -1915,14 +1945,13 @@ def show_dashboard():
                         if raw_total_df is not None and not raw_total_df.empty:
                             raw_total_df["Purchase Qty"] = 0
 
-                # ── branch df company filter ────────────────────────────────
+                # branch df company filter
                 if raw_branch_df is not None and not raw_branch_df.empty:
                     if selected_company != t("All Companies", "جميع الشركات"):
                         allowed = {get_system_name(k) for k in inv_keys}
                         if "System" in raw_branch_df.columns:
                             raw_branch_df = raw_branch_df[raw_branch_df["System"].isin(allowed)]
 
-                # BUG FIX #2: always persist to session_state
                 st.session_state.inventory_df        = prepare_df(raw_total_df)
                 st.session_state.inventory_branch_df = prepare_df(raw_branch_df)
                 st.session_state.inv_page            = 0
@@ -1937,7 +1966,7 @@ def show_dashboard():
                 unsafe_allow_html=True,
             )
         else:
-            # All column refs use t() — safe in both EN and AR
+            # All column refs use t()
             qc    = t("On Hand",    "متوفر")
             sp    = t("Sale Price", "سعر البيع")
             mc    = t("Model Code", "رمز الموديل")
@@ -1992,8 +2021,10 @@ def show_dashboard():
             if branch_df is not None and not branch_df.empty and br_c in branch_df.columns and qc in branch_df.columns:
                 st.markdown(f"<div class='section-header'>🏪 {t('Branch-wise Stock Distribution','توزيع المخزون حسب الفرع')}</div>", unsafe_allow_html=True)
                 branch_agg = branch_df.groupby(br_c)[qc].sum().reset_index().sort_values(qc, ascending=False)
+                # PATCH 2: use th_color()
                 fig_branch = px.bar(branch_agg, x=br_c, y=qc,
-                                    color=qc, color_continuous_scale=[th("accent1"), th("accent2")],
+                                    color=qc,
+                                    color_continuous_scale=[th_color("accent1", "#667eea"), th_color("accent2", "#f093fb")],
                                     template=th("plotly_template"), text_auto=".2s")
                 st.plotly_chart(apply_plotly_theme(fig_branch), use_container_width=True)
                 st.divider()
@@ -2053,10 +2084,11 @@ def show_dashboard():
         with pfc2:
             pos_model_filter = st.text_input(t("Model Code (optional)", "رمز الموديل (اختياري)"), key="pos_model_filter").strip()
 
+        # PATCH 4: safe del pattern for POS reset
         if st.button(t("Reset Filters", "إعادة تعيين"), key="pos_reset_filters"):
-            st.session_state.pos_branch_filter = ""
-            st.session_state.pos_model_filter  = ""
-            st.session_state.pos_company        = t("All Companies", "جميع الشركات")
+            for k in ["pos_branch_filter", "pos_model_filter", "pos_company"]:
+                if k in st.session_state:
+                    del st.session_state[k]
             st.rerun()
 
         pos_viz_mode = viz_mode_selector("pos_viz_mode")
@@ -2070,7 +2102,6 @@ def show_dashboard():
                     pos_branch_filter, pos_model_filter,
                     lang=st.session_state.lang,
                 )
-                # BUG FIX #3: null check before filtering
                 if raw_pos is not None and not raw_pos.empty and pos_co != t("All Companies", "جميع الشركات"):
                     allowed = {get_system_name(k) for k in pos_keys}
                     if "System" in raw_pos.columns:
@@ -2088,7 +2119,7 @@ def show_dashboard():
                 unsafe_allow_html=True,
             )
         else:
-            # BUG FIX #1/#3: always use t() for column names
+            # PATCH 6: always use t() for column names
             qty_col       = t("Qty",          "الكمية")
             total_col     = t("Total Amount", "المبلغ الإجمالي")
             branch_col    = t("Branch",       "الفرع")
@@ -2142,8 +2173,10 @@ def show_dashboard():
             if cashier_col in unique_orders.columns and total_col in unique_orders.columns:
                 cashier_agg = unique_orders.groupby(cashier_col)[total_col].sum().reset_index().sort_values(total_col, ascending=False)
                 st.markdown(f"<div class='section-header'>👤 {t('Cashier Performance','أداء الكاشير')}</div>", unsafe_allow_html=True)
+                # PATCH 2: use th_color()
                 fig_cash = px.bar(cashier_agg.head(10), x=cashier_col, y=total_col,
-                                  color=total_col, color_continuous_scale=[th("accent1"), th("accent2")],
+                                  color=total_col,
+                                  color_continuous_scale=[th_color("accent1", "#667eea"), th_color("accent2", "#f093fb")],
                                   template=th("plotly_template"), text_auto=".2s")
                 st.plotly_chart(apply_plotly_theme(fig_cash), use_container_width=True)
                 render_paginated_table(cashier_agg, "pos_cashier_page")
@@ -2152,8 +2185,10 @@ def show_dashboard():
             if mc in pos_df.columns and qty_col in pos_df.columns:
                 top_prods = pos_df.groupby(mc)[qty_col].sum().reset_index().sort_values(qty_col, ascending=False).head(10)
                 st.markdown(f"<div class='section-header'>🏆 {t('Top 10 Products','أفضل 10 منتجات')}</div>", unsafe_allow_html=True)
+                # PATCH 2: use th_color()
                 fig_prod = px.bar(top_prods, x=mc, y=qty_col,
-                                  color=qty_col, color_continuous_scale=[th("accent1"), th("accent2")],
+                                  color=qty_col,
+                                  color_continuous_scale=[th_color("accent1", "#667eea"), th_color("accent2", "#f093fb")],
                                   template=th("plotly_template"), text_auto=".2s")
                 st.plotly_chart(apply_plotly_theme(fig_prod), use_container_width=True)
                 st.divider()
@@ -2163,9 +2198,11 @@ def show_dashboard():
                 daily[date_col] = pd.to_datetime(daily[date_col], errors="coerce").dt.date
                 daily_trend = daily.groupby(date_col)[total_col].sum().reset_index().sort_values(date_col)
                 st.markdown(f"<div class='section-header'>📈 {t('Daily Revenue Trend','الاتجاه اليومي للإيرادات')}</div>", unsafe_allow_html=True)
+                # PATCH 2: use th_color()
+                a1 = th_color("accent1", "#667eea")
                 fig_trend = px.area(daily_trend, x=date_col, y=total_col,
-                                    template=th("plotly_template"), color_discrete_sequence=[th("accent1")])
-                fig_trend.update_traces(fillcolor=f"{th('accent1')}33", line_color=th("accent1"), line_width=2.5)
+                                    template=th("plotly_template"), color_discrete_sequence=[a1])
+                fig_trend.update_traces(fillcolor=a1 + "33", line_color=a1, line_width=2.5)
                 st.plotly_chart(apply_plotly_theme(fig_trend), use_container_width=True)
                 st.divider()
 
@@ -2181,7 +2218,7 @@ def show_dashboard():
                                    "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet", use_container_width=True)
 
     # =========================================================================
-    # SALES TAB  (BUG FIX #3)
+    # SALES TAB
     # =========================================================================
     with tab_sales:
         st.markdown(f"<div class='section-header'>🛍️ {t('Sales Orders Analytics','تحليلات أوامر البيع')}</div>", unsafe_allow_html=True)
@@ -2203,9 +2240,11 @@ def show_dashboard():
 
         sales_model_filter = st.text_input(t("Model Code filter (optional)", "فلتر رمز الموديل (اختياري)"), key="sales_model_filter").strip()
 
+        # PATCH 4: safe del pattern for sales reset
         if st.button(t("Reset Filters", "إعادة تعيين"), key="sales_reset_filters"):
-            st.session_state.sales_model_filter = ""
-            st.session_state.sales_company      = t("All Companies", "جميع الشركات")
+            for k in ["sales_model_filter", "sales_company"]:
+                if k in st.session_state:
+                    del st.session_state[k]
             st.rerun()
 
         sales_viz_mode = viz_mode_selector("sales_viz_mode")
@@ -2219,7 +2258,6 @@ def show_dashboard():
                     sales_model_filter,
                     lang=st.session_state.lang,
                 )
-                # BUG FIX #3: null check before filtering
                 if raw_sales is not None and not raw_sales.empty and sales_co != t("All Companies", "جميع الشركات"):
                     allowed = {get_system_name(k) for k in sales_keys}
                     if "System" in raw_sales.columns:
@@ -2237,7 +2275,7 @@ def show_dashboard():
                 unsafe_allow_html=True,
             )
         else:
-            # BUG FIX #1/#3: all column refs via t()
+            # PATCH 6: all column refs via t()
             qty_col      = t("Qty",          "الكمية")
             total_col    = t("Total Amount", "المبلغ الإجمالي")
             customer_col = t("Customer",     "العميل")
@@ -2246,7 +2284,6 @@ def show_dashboard():
             so_col       = t("SO",           "أمر بيع")
             sub_col      = t("Subtotal",     "المجموع الفرعي")
 
-            # Defensive: verify SO column exists
             if so_col not in sales_df.columns:
                 st.warning(t(f"Expected column '{so_col}' not found. Please re-fetch data.",
                              f"العمود المتوقع '{so_col}' غير موجود. يرجى إعادة جلب البيانات."))
@@ -2287,8 +2324,10 @@ def show_dashboard():
                 if mc in sales_df.columns and qty_col in sales_df.columns:
                     top_prods = sales_df.groupby(mc)[qty_col].sum().reset_index().sort_values(qty_col, ascending=False).head(10)
                     st.markdown(f"<div class='section-header'>🏆 {t('Top 10 Products by Qty Sold','أفضل 10 منتجات حسب الكمية')}</div>", unsafe_allow_html=True)
+                    # PATCH 2: use th_color()
                     fig_sp = px.bar(top_prods, x=mc, y=qty_col,
-                                    color=qty_col, color_continuous_scale=[th("accent1"), th("accent2")],
+                                    color=qty_col,
+                                    color_continuous_scale=[th_color("accent1", "#667eea"), th_color("accent2", "#f093fb")],
                                     template=th("plotly_template"), text_auto=".2s")
                     st.plotly_chart(apply_plotly_theme(fig_sp), use_container_width=True)
                     st.divider()
@@ -2298,9 +2337,11 @@ def show_dashboard():
                     daily[date_col] = pd.to_datetime(daily[date_col], errors="coerce").dt.date
                     daily_trend = daily.groupby(date_col)[total_col].sum().reset_index().sort_values(date_col)
                     st.markdown(f"<div class='section-header'>📈 {t('Daily Revenue Trend','الاتجاه اليومي للإيرادات')}</div>", unsafe_allow_html=True)
+                    # PATCH 2: use th_color()
+                    a2 = th_color("accent2", "#f093fb")
                     fig_st = px.area(daily_trend, x=date_col, y=total_col,
-                                     template=th("plotly_template"), color_discrete_sequence=[th("accent2")])
-                    fig_st.update_traces(fillcolor=f"{th('accent2')}33", line_color=th("accent2"), line_width=2.5)
+                                     template=th("plotly_template"), color_discrete_sequence=[a2])
+                    fig_st.update_traces(fillcolor=a2 + "33", line_color=a2, line_width=2.5)
                     st.plotly_chart(apply_plotly_theme(fig_st), use_container_width=True)
                     st.divider()
 
@@ -2316,7 +2357,7 @@ def show_dashboard():
                                        "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet", use_container_width=True)
 
     # =========================================================================
-    # PURCHASE TAB  (BUG FIX #4)
+    # PURCHASE TAB
     # =========================================================================
     with tab_pur:
         st.markdown(f"<div class='section-header'>🔖 {t('Purchase Analytics','تحليلات المشتريات')}</div>", unsafe_allow_html=True)
@@ -2332,9 +2373,11 @@ def show_dashboard():
 
         pur_model = st.text_input(t("Model Code filter (optional)", "فلتر رمز الموديل (اختياري)"), key="pur_model").strip()
 
+        # PATCH 4: safe del pattern for purchase reset
         if st.button(t("Reset Filters", "إعادة تعيين"), key="pur_reset_filters"):
-            st.session_state.pur_model   = ""
-            st.session_state.pur_company = t("All Companies", "جميع الشركات")
+            for k in ["pur_model", "pur_company"]:
+                if k in st.session_state:
+                    del st.session_state[k]
             st.rerun()
 
         pc1, pc2 = st.columns(2)
@@ -2353,7 +2396,6 @@ def show_dashboard():
                     pur_date_to.strftime("%Y-%m-%d"),
                     lang=st.session_state.lang,
                 )
-                # BUG FIX #4: null check before filtering
                 if raw_pur is not None and not raw_pur.empty and pur_co != t("All Companies", "جميع الشركات"):
                     allowed = {get_system_name(k) for k in pur_keys}
                     if "System" in raw_pur.columns:
@@ -2371,7 +2413,7 @@ def show_dashboard():
                 unsafe_allow_html=True,
             )
         else:
-            # BUG FIX #1/#4: all column refs via t()
+            # PATCH 6: all column refs via t()
             qty_col_pur = t("Qty",              "الكمية")
             sub_col_pur = t("Subtotal",         "المجموع الفرعي")
             vendor_col  = t("Vendor",           "المورد")
@@ -2380,7 +2422,6 @@ def show_dashboard():
             loc_col     = t("Receipt Location", "موقع الاستلام")
             po_col      = t("PO",               "أمر شراء")
 
-            # Defensive coercions
             if qty_col_pur not in pur_df.columns:
                 pur_df[qty_col_pur] = 0
             if sub_col_pur not in pur_df.columns:
@@ -2436,9 +2477,11 @@ def show_dashboard():
                 daily_pur[date_col] = pd.to_datetime(daily_pur[date_col], errors="coerce").dt.date
                 daily_pur_trend = daily_pur.groupby(date_col)[sub_col_pur].sum().reset_index().sort_values(date_col)
                 st.markdown(f"<div class='section-header'>📈 {t('Daily Purchase Trend','الاتجاه اليومي للمشتريات')}</div>", unsafe_allow_html=True)
+                # PATCH 2: use th_color()
+                a3 = th_color("accent3", "#43e97b")
                 fig_ptrend = px.area(daily_pur_trend, x=date_col, y=sub_col_pur,
-                                     template=th("plotly_template"), color_discrete_sequence=[th("accent3")])
-                fig_ptrend.update_traces(fillcolor=f"{th('accent3')}33", line_color=th("accent3"), line_width=2.5)
+                                     template=th("plotly_template"), color_discrete_sequence=[a3])
+                fig_ptrend.update_traces(fillcolor=a3 + "33", line_color=a3, line_width=2.5)
                 st.plotly_chart(apply_plotly_theme(fig_ptrend), use_container_width=True)
                 st.divider()
 
