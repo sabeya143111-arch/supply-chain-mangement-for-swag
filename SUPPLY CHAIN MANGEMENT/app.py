@@ -1426,7 +1426,8 @@ def show_dashboard():
         branch_df = st.session_state.get("inventory_branch_df")
 
         if total_df is None or total_df.empty:
-            st.markdown(f"<div class='info-banner'>ℹ️ {t(\"Click 'Refresh Inventory' to load data.\",\"اضغط تحديث المخزون لتحميل البيانات.\")}</div>", unsafe_allow_html=True)
+            _inv_msg = t("Click 'Refresh Inventory' to load data.", "اضغط تحديث المخزون لتحميل البيانات.")
+            st.markdown(f"<div class='info-banner'>ℹ️ {_inv_msg}</div>", unsafe_allow_html=True)
         else:
             qc = t("On Hand","متوفر")
             sp = t("Sale Price","سعر البيع")
@@ -1531,7 +1532,8 @@ def show_dashboard():
         pos_df = st.session_state.get("pos_df")
 
         if pos_df is None or pos_df.empty:
-            st.markdown(f"<div class='info-banner'>ℹ️ {t(\"Click 'Refresh POS Data' to load data.\",\"اضغط تحديث بيانات نقاط البيع لتحميل البيانات.\")}</div>", unsafe_allow_html=True)
+            _pos_msg = t("Click 'Refresh POS Data' to load data.", "اضغط تحديث بيانات نقاط البيع لتحميل البيانات.")
+            st.markdown(f"<div class='info-banner'>ℹ️ {_pos_msg}</div>", unsafe_allow_html=True)
         else:
             qty_col = t("Qty","الكمية")
             total_col = t("Total Amount","المبلغ الإجمالي")
@@ -1639,7 +1641,8 @@ def show_dashboard():
         sales_df = st.session_state.get("sales_df")
 
         if sales_df is None or sales_df.empty:
-            st.markdown(f"<div class='info-banner'>ℹ️ {t(\"Click 'Refresh Sales Data' to load.\",\"اضغط تحديث بيانات المبيعات لتحميل البيانات.\")}</div>", unsafe_allow_html=True)
+            _sales_msg = t("Click 'Refresh Sales Data' to load.", "اضغط تحديث بيانات المبيعات لتحميل البيانات.")
+            st.markdown(f"<div class='info-banner'>ℹ️ {_sales_msg}</div>", unsafe_allow_html=True)
         else:
             qty_col = t("Qty","الكمية")
             total_col = t("Total Amount","المبلغ الإجمالي")
@@ -1735,7 +1738,8 @@ def show_dashboard():
         pur_df = st.session_state.get("purchase_df")
 
         if pur_df is None or pur_df.empty:
-            st.markdown(f"<div class='info-banner'>ℹ️ {t(\"Click 'Refresh Purchase' to load.\",\"اضغط تحديث المشتريات لتحميل البيانات.\")}</div>", unsafe_allow_html=True)
+            _pur_msg = t("Click 'Refresh Purchase' to load.", "اضغط تحديث المشتريات لتحميل البيانات.")
+            st.markdown(f"<div class='info-banner'>ℹ️ {_pur_msg}</div>", unsafe_allow_html=True)
         else:
             qty_col_pur = t("Qty","الكمية")
             sub_col_pur = t("Subtotal","المجموع الفرعي")
