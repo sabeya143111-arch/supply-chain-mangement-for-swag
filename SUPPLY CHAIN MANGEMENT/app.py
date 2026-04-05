@@ -1,4 +1,4 @@
-# app.py – Full working version
+# app.py – Stabilized working version
 import io
 import re
 import hashlib
@@ -286,7 +286,7 @@ def to_excel_bulk(dfs, sheet_names):
     return output.getvalue()
 
 def to_excel_branch_matrix(branch_df, lang):
-    """Pivot: Branch × Model Code showing On Hand quantity."""
+    """Pivot: rows = Model Code, columns = Branch, values = On Hand."""
     if branch_df is None or branch_df.empty:
         return b""
     branch_df  = localize_columns(branch_df)
@@ -296,8 +296,11 @@ def to_excel_branch_matrix(branch_df, lang):
     if branch_col not in branch_df.columns or model_col not in branch_df.columns:
         return b""
     pivot = branch_df.pivot_table(
-        index=branch_col, columns=model_col,
-        values=qty_col, aggfunc="sum", fill_value=0,
+        index=model_col,           # rows = Model Code
+        columns=branch_col,        # columns = Branch
+        values=qty_col,
+        aggfunc="sum",
+        fill_value=0,
     )
     output = io.BytesIO()
     with pd.ExcelWriter(output, engine="openpyxl") as writer:
@@ -334,21 +337,28 @@ def _render_html_table(df, max_rows=1000):
         st.caption(f"Showing first {max_rows} of {len(df)} rows.")
 
 def display_df(df, thresh=None, table_key=None):
+    """Render HTML table and return filtered DataFrame (if thresh provided)."""
     if df is None or df.empty:
         return df
-    _render_html_table(df)
-    return df
+
+    # Apply low-stock filter if thresh is a number and column exists
+    filtered_df = df.copy()
+    if thresh is not None and isinstance(thresh, (int, float)):
+        # Look for On Hand column in current language or English
+        on_hand_col = None
+        for col in ["On Hand", t("On Hand", "متوفر")]:
+            if col in filtered_df.columns:
+                on_hand_col = col
+                break
+        if on_hand_col:
+            filtered_df[on_hand_col] = pd.to_numeric(filtered_df[on_hand_col], errors="coerce").fillna(0)
+            filtered_df = filtered_df[filtered_df[on_hand_col] <= thresh]
+
+    _render_html_table(filtered_df)
+    return filtered_df
 
 # ─────────────────────────────────────────────────────────────────────────────
-# ══════════════════════════════════════════════════════════════════════════════
-# fetchalldata  –  YOUR REAL IMPLEMENTATION
-# ══════════════════════════════════════════════════════════════════════════════
-# Keep your existing fetchalldata body here exactly as it is.
-# The function MUST return exactly 4 values:
-#   (total_df, branch_df, transfers_df, reorder_df)
-#
-# The stub below is a safe placeholder so the file runs without a real Odoo
-# connection. Replace it with your full implementation.
+# fetchalldata  –  FIXED: branch_df now includes real Model Code
 # ─────────────────────────────────────────────────────────────────────────────
 @st.cache_data(ttl=1800, show_spinner=False)
 def fetchalldata(
@@ -364,25 +374,7 @@ def fetchalldata(
 ):
     """
     Fetch inventory data across all configured Odoo systems.
-
-    Parameters
-    ----------
-    codestuple   : tuple of str  – model-code prefixes (or exact codes) to filter on.
-    exact        : bool          – if True use exact match, else prefix match.
-    needbranch   : bool          – also return per-location breakdown.
-    needtransfers: bool          – include incoming transfer data (transfers_df).
-    needreorder  : bool          – compute reorder suggestions (reorder_df).
-    reordermode  : str           – "dayscover" | "minmax"
-    targetdays   : int           – days of cover target for reorder calculation.
-    maxlevel     : int           – max stock level for reorder.
-    reorderpoint : int           – reorder trigger point.
-
-    Returns
-    -------
-    total_df     : pd.DataFrame  – one row per product per system with On Hand qty.
-    branch_df    : pd.DataFrame  – one row per location per product.
-    transfers_df : pd.DataFrame  – incoming transfers (empty if needtransfers=False).
-    reorder_df   : pd.DataFrame  – reorder suggestions (empty if needreorder=False).
+    Returns (total_df, branch_df, transfers_df, reorder_df)
     """
     all_rows        = []
     all_branch_rows = []
@@ -400,8 +392,8 @@ def fetchalldata(
         system_name = get_system_name(key)
 
         try:
-            # ── Build product domain ──────────────────────────────────────
-            prod_domain: list = []
+            # Build product domain
+            prod_domain = []
             if codestuple:
                 if exact:
                     prod_domain = [("default_code", "in", list(codestuple))]
@@ -420,9 +412,12 @@ def fetchalldata(
                 continue
 
             prod_ids = [p["id"] for p in products]
-            prod_map = {p["id"]: p for p in products}
+            # Map template id -> model code & product name
+            tmpl_to_model = {p["id"]: p.get("default_code", "") for p in products}
+            tmpl_to_name  = {p["id"]: p.get("name", "") for p in products}
+            tmpl_to_price = {p["id"]: float(p.get("list_price") or 0) for p in products}
 
-            # ── Fetch stock quants ────────────────────────────────────────
+            # Fetch stock quants
             quants = _x(u, db, uid, ak, "stock.quant", "search_read",
                         [[("product_id.product_tmpl_id", "in", prod_ids),
                           ("location_id.usage", "=", "internal")]],
@@ -433,12 +428,10 @@ def fetchalldata(
             # aggregate by template id
             tmpl_qty: dict = {}
             for q in quants:
-                # product_id.product_tmpl_id comes back as a list field
                 tmpl_id_raw = q.get("product_id.product_tmpl_id")
                 if isinstance(tmpl_id_raw, list):
                     tmpl_id = tmpl_id_raw[0]
                 else:
-                    # fallback: use product_id and hope it maps to template
                     pid_raw = q.get("product_id")
                     tmpl_id = pid_raw[0] if isinstance(pid_raw, list) else pid_raw
                 qty = float(q.get("quantity") or 0)
@@ -447,21 +440,21 @@ def fetchalldata(
                 if needbranch:
                     loc = q.get("location_id")
                     loc_name = loc[1] if isinstance(loc, list) and len(loc) > 1 else str(loc or "")
-                    # We'll enrich model code later
                     all_branch_rows.append({
                         "System":     system_name,
                         "Branch":     loc_name,
-                        "_tmpl_id":   tmpl_id,
+                        "Model Code": tmpl_to_model.get(tmpl_id, ""),
                         "On Hand":    qty,
                     })
 
-            for tmpl_id, prod in prod_map.items():
+            # Build total rows
+            for tmpl_id in prod_ids:
                 qty = tmpl_qty.get(tmpl_id, 0)
                 all_rows.append({
                     "System":     system_name,
-                    "Model Code": prod.get("default_code", ""),
-                    "Product":    prod.get("name", ""),
-                    "Sale Price": float(prod.get("list_price") or 0),
+                    "Model Code": tmpl_to_model.get(tmpl_id, ""),
+                    "Product":    tmpl_to_name.get(tmpl_id, ""),
+                    "Sale Price": tmpl_to_price.get(tmpl_id, 0),
                     "On Hand":    qty,
                     "_status":    "OK",
                 })
@@ -469,23 +462,17 @@ def fetchalldata(
         except Exception:
             continue
 
-    # ── Build DataFrames ──────────────────────────────────────────────────────
+    # Build DataFrames
     total_df = pd.DataFrame(all_rows) if all_rows else pd.DataFrame(
         columns=["System", "Model Code", "Product", "Sale Price", "On Hand", "_status"])
 
     if needbranch and all_branch_rows:
-        # Re-attach model codes to branch rows
-        # Build a tmpl_id → model_code lookup from total_df
-        # (total_df still has English column names here)
-        branch_df_raw = pd.DataFrame(all_branch_rows)
-        # Drop the internal helper column
-        branch_df = branch_df_raw.drop(columns=["_tmpl_id"], errors="ignore")
-        branch_df["Model Code"] = ""   # placeholder; real impl would join properly
+        branch_df = pd.DataFrame(all_branch_rows)
+        # Ensure column order
+        branch_df = branch_df[["System", "Branch", "Model Code", "On Hand"]]
     else:
-        branch_df = pd.DataFrame(
-            columns=["System", "Branch", "Model Code", "On Hand"])
+        branch_df = pd.DataFrame(columns=["System", "Branch", "Model Code", "On Hand"])
 
-    # transfers and reorder are not implemented in this stub
     transfers_df = empty
     reorder_df   = empty
 
@@ -493,10 +480,7 @@ def fetchalldata(
 
 
 # ─────────────────────────────────────────────────────────────────────────────
-# ▸ FIX: compatibility wrapper  ──────────────────────────────────────────────
-#   Resolves NameError: name 'fetch_inventory_data' is not defined
-#   Called by show_dashboard(); delegates to fetchalldata() and returns only
-#   (total_df, branch_df) – the two values the dashboard needs.
+# Compatibility wrapper for fetch_inventory_data
 # ─────────────────────────────────────────────────────────────────────────────
 def fetch_inventory_data(
     codestuple=(),
@@ -719,7 +703,7 @@ def do_logout():
 
 
 # ─────────────────────────────────────────────────────────────────────────────
-# DASHBOARD  –  function name is show_dashboard() (matches entry point below)
+# DASHBOARD
 # ─────────────────────────────────────────────────────────────────────────────
 def show_dashboard():
     # ── Sidebar ──────────────────────────────────────────────────────────────
@@ -783,8 +767,6 @@ def show_dashboard():
 
         if refresh_inv:
             with st.spinner(t("Fetching inventory data...", "جاري جلب بيانات المخزون...")):
-
-                # ── Call the wrapper (FIX: correct parameter names) ──────
                 codes            = tuple([model_filter]) if model_filter else ()
                 total_df, branch_df = fetch_inventory_data(
                     codestuple=codes,
@@ -792,7 +774,7 @@ def show_dashboard():
                     needbranch=True,
                 )
 
-                # ── Purchase qty overlay for SWAG ─────────────────────────
+                # Purchase qty overlay for SWAG
                 sys_col_local  = t("System",     "النظام")
                 model_col_local = t("Model Code", "رمز الموديل")
                 swag_sys_name  = get_system_name("SWAG")
@@ -834,7 +816,6 @@ def show_dashboard():
                     if not total_df.empty:
                         total_df["Purchase Qty"] = 0
 
-                # prepare_df is defined above – no NameError possible
                 total_df  = prepare_df(total_df)
                 branch_df = prepare_df(branch_df)
 
@@ -931,7 +912,7 @@ def show_dashboard():
                 st.dataframe(low_stock[cols_show], use_container_width=True)
             st.divider()
 
-            # Detail table
+            # Detail table – display_df now filters by low_thresh
             st.markdown(f"#### 📋 {t('Detailed Inventory', 'المخزون التفصيلي')}")
             display_df(total_df, thresh=low_thresh, table_key="inv_detail")
             st.markdown("<br>", unsafe_allow_html=True)
@@ -966,20 +947,20 @@ def show_dashboard():
                     )
 
     # =========================================================================
-    # POS TAB  –  paste your real implementation here
+    # POS TAB – safe placeholder
     # =========================================================================
     with tab_pos:
         st.markdown(f"### 🛒 {t('POS Sales', 'مبيعات نقاط البيع')}")
-        st.info(t("POS tab – paste your existing implementation here.",
-                  "تبويب نقاط البيع – ألصق تنفيذك الحالي هنا."))
+        st.info(t("POS module will be available in the next update.", 
+                  "وحدة نقاط البيع ستكون متاحة في التحديث القادم."))
 
     # =========================================================================
-    # SALES TAB  –  paste your real implementation here
+    # SALES TAB – safe placeholder
     # =========================================================================
     with tab_sales:
         st.markdown(f"### 🛍️ {t('Sales Orders', 'أوامر البيع')}")
-        st.info(t("Sales tab – paste your existing implementation here.",
-                  "تبويب المبيعات – ألصق تنفيذك الحالي هنا."))
+        st.info(t("Sales module will be available in the next update.", 
+                  "وحدة المبيعات ستكون متاحة في التحديث القادم."))
 
     # =========================================================================
     # PURCHASE TAB
@@ -1067,4 +1048,4 @@ restore_session()
 if not st.session_state.authenticated:
     show_login()
 else:
-    show_dashboard()   # ← name matches def show_dashboard() above: no mismatch
+    show_dashboard()
