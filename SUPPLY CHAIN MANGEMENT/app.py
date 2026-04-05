@@ -1829,7 +1829,7 @@ def show_dashboard():
     # ── HEADER ────────────────────────────────────────────────────────────────
     st.markdown(f"""
     <div class='dash-header'>
-        <div class='dash-title'>💎 Executive Operations Dashboard</div>
+        <div class='dash-title'>SWAG -MULTI DASBOARD</div>
         <div class='dash-subtitle'>{t('Multi-Company · Inventory · POS · Sales · Purchase · AI Insights','متعدد الشركات · المخزون · نقاط البيع · المبيعات · المشتريات · تحليلات ذكية')}</div>
     </div>""", unsafe_allow_html=True)
     st.divider()
