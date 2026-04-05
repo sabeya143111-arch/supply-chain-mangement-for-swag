@@ -1,4 +1,4 @@
-# app.py – PREMIUM EXECUTIVE DASHBOARD
+# app.py – PREMIUM EXECUTIVE DASHBOARD (STABLE VERSION)
 # Multi-Company Odoo Operations Dashboard
 # Board-of-Directors Level Analytics
 # Features: Inventory, POS, Sales, Purchase, Premium Viz, Theme Switcher, AI Insights, Pagination
@@ -25,7 +25,7 @@ st.set_page_config(
 )
 
 # ─────────────────────────────────────────────────────────────────────────────
-# THEMES
+# THEMES (unchanged, safe)
 # ─────────────────────────────────────────────────────────────────────────────
 THEMES = {
     "Dark Executive": {
@@ -138,7 +138,6 @@ THEMES = {
     },
 }
 
-# FIX: Validate theme exists and fallback to default
 def get_theme():
     theme = st.session_state.get("theme", "Dark Executive")
     if theme not in THEMES:
@@ -335,6 +334,11 @@ _DEF = {
     "pos_page": 0,
     "sales_page": 0,
     "pur_page": 0,
+    # ENHANCEMENT: last refresh timestamps
+    "inv_last_refresh": None,
+    "pos_last_refresh": None,
+    "sales_last_refresh": None,
+    "pur_last_refresh": None,
 }
 for k, v in _DEF.items():
     if k not in st.session_state:
@@ -509,6 +513,11 @@ def render_paginated_table(df, page_key, rows_per_page=ROWS_PER_PAGE):
         st.markdown(f"<div class='info-banner'>ℹ️ {t('No data to display.','لا توجد بيانات للعرض.')}</div>", unsafe_allow_html=True)
         return
 
+    # Ensure we have at least one column
+    if len(df.columns) == 0:
+        st.markdown(f"<div class='info-banner'>ℹ️ {t('Data has no columns.','البيانات ليس لها أعمدة.')}</div>", unsafe_allow_html=True)
+        return
+
     total_rows = len(df)
     total_pages = max(1, math.ceil(total_rows / rows_per_page))
     current_page = st.session_state.get(page_key, 0)
@@ -564,6 +573,8 @@ def render_paginated_table(df, page_key, rows_per_page=ROWS_PER_PAGE):
 # VISUALIZATION ENGINE
 # ─────────────────────────────────────────────────────────────────────────────
 def apply_plotly_theme(fig):
+    if fig is None:
+        return
     fig.update_layout(
         paper_bgcolor="rgba(0,0,0,0)",
         plot_bgcolor="rgba(0,0,0,0)",
@@ -591,7 +602,9 @@ def render_visualization(df, viz_mode, x_col, y_col, label=None, color_col=None)
     df_plot[y_col] = pd.to_numeric(df_plot[y_col], errors="coerce").fillna(0)
 
     if viz_mode == "📋 List View":
-        render_paginated_table(df, "viz_table_page")
+        # Use a unique page key based on the label to avoid conflicts
+        unique_key = f"viz_table_{hash(label or x_col) & 0xFFFFFFFF}"
+        render_paginated_table(df, unique_key)
         return
 
     df_agg = df_plot.groupby(x_col)[y_col].sum().reset_index().sort_values(y_col, ascending=False)
@@ -775,10 +788,10 @@ def render_exec_summary(df, value_col, label_col, section_title, top_n=5, bottom
             st.markdown(bot_html, unsafe_allow_html=True)
 
 # ─────────────────────────────────────────────────────────────────────────────
-# INVENTORY FETCH
+# INVENTORY FETCH (FIXED: added lang parameter for cache)
 # ─────────────────────────────────────────────────────────────────────────────
 @st.cache_data(ttl=1800, show_spinner=False)
-def fetch_inventory_cached(codestuple=(), exact=False):
+def fetch_inventory_cached(codestuple=(), exact=False, lang=None):  # lang added for cache key
     all_rows = []
     all_branch_rows = []
 
@@ -791,7 +804,7 @@ def fetch_inventory_cached(codestuple=(), exact=False):
             continue
 
         u, db, ak = cfg["url"], cfg["db"], cfg["api_key"]
-        system_name = get_system_name(key)
+        system_name = get_system_name(key)  # now cached per lang
 
         try:
             prod_domain = []
@@ -864,14 +877,14 @@ def fetch_inventory_cached(codestuple=(), exact=False):
 
     return total_df, branch_df
 
-def fetch_inventory_data(codestuple=(), exact=False):
-    return fetch_inventory_cached(codestuple=codestuple, exact=exact)
+def fetch_inventory_data(codestuple=(), exact=False, lang=None):
+    return fetch_inventory_cached(codestuple=codestuple, exact=exact, lang=lang)
 
 # ─────────────────────────────────────────────────────────────────────────────
-# PURCHASE FETCH
+# PURCHASE FETCH (FIXED: added lang parameter)
 # ─────────────────────────────────────────────────────────────────────────────
 @st.cache_data(ttl=1800, show_spinner=False)
-def fetch_purchase_for_system(system_key, model_code, date_from, date_to):
+def fetch_purchase_for_system(system_key, model_code, date_from, date_to, lang=None):
     _empty_cols = ["Date","PO","Vendor","Receipt Location","Category",
                    "Model Code","Product","Qty","Unit Price","Subtotal","System"]
     empty_df = pd.DataFrame(columns=_empty_cols)
@@ -884,7 +897,7 @@ def fetch_purchase_for_system(system_key, model_code, date_from, date_to):
         return empty_df
 
     u, db, ak = cfg["url"], cfg["db"], cfg["api_key"]
-    system_name = get_system_name(system_key)
+    system_name = get_system_name(system_key)  # now cached per lang
 
     try:
         po_domain = [
@@ -964,10 +977,10 @@ def fetch_purchase_for_system(system_key, model_code, date_from, date_to):
     except Exception:
         return empty_df
 
-def fetch_purchase_multi(selected_keys, model_code, date_from, date_to):
+def fetch_purchase_multi(selected_keys, model_code, date_from, date_to, lang=None):
     results = []
     with ThreadPoolExecutor(max_workers=4) as ex:
-        futs = {ex.submit(fetch_purchase_for_system, k, model_code, date_from, date_to): k
+        futs = {ex.submit(fetch_purchase_for_system, k, model_code, date_from, date_to, lang): k
                 for k in selected_keys}
         for f in as_completed(futs):
             try:
@@ -983,7 +996,7 @@ def fetch_purchase_multi(selected_keys, model_code, date_from, date_to):
     return combined.sort_values("Date", ascending=False).reset_index(drop=True)
 
 @st.cache_data(ttl=3600, show_spinner=False)
-def get_purchase_summary_by_model(model_codes_tuple, date_from, date_to):
+def get_purchase_summary_by_model(model_codes_tuple, date_from, date_to, lang=None):
     if not model_codes_tuple:
         return pd.DataFrame(columns=["Model Code","Purchase Qty"])
     swag_cfg = st.secrets.get("SWAG")
@@ -1020,10 +1033,10 @@ def get_purchase_summary_by_model(model_codes_tuple, date_from, date_to):
         return pd.DataFrame(columns=["Model Code","Purchase Qty"])
 
 # ─────────────────────────────────────────────────────────────────────────────
-# POS FETCH
+# POS FETCH (FIXED: added lang parameter)
 # ─────────────────────────────────────────────────────────────────────────────
 @st.cache_data(ttl=1800, show_spinner=False)
-def fetch_pos_for_system(system_key, date_from, date_to, branch_filter, model_filter):
+def fetch_pos_for_system(system_key, date_from, date_to, branch_filter, model_filter, lang=None):
     empty_df = pd.DataFrame(columns=[
         "System","Date","POS Order","Branch","Customer","Cashier",
         "Model Code","Product","Qty","Unit Price","Subtotal","Total Amount"
@@ -1139,10 +1152,10 @@ def fetch_pos_for_system(system_key, date_from, date_to, branch_filter, model_fi
     except Exception:
         return empty_df
 
-def fetch_pos_multi(selected_keys, date_from, date_to, branch_filter, model_filter):
+def fetch_pos_multi(selected_keys, date_from, date_to, branch_filter, model_filter, lang=None):
     results = []
     with ThreadPoolExecutor(max_workers=4) as ex:
-        futs = {ex.submit(fetch_pos_for_system, k, date_from, date_to, branch_filter, model_filter): k
+        futs = {ex.submit(fetch_pos_for_system, k, date_from, date_to, branch_filter, model_filter, lang): k
                 for k in selected_keys}
         for f in as_completed(futs):
             try:
@@ -1158,10 +1171,10 @@ def fetch_pos_multi(selected_keys, date_from, date_to, branch_filter, model_filt
     return combined.sort_values("Date", ascending=False).reset_index(drop=True)
 
 # ─────────────────────────────────────────────────────────────────────────────
-# SALES FETCH — FULLY FIXED
+# SALES FETCH (FIXED: added lang parameter)
 # ─────────────────────────────────────────────────────────────────────────────
 @st.cache_data(ttl=1800, show_spinner=False)
-def fetch_sales_for_system(system_key, date_from, date_to, model_filter):
+def fetch_sales_for_system(system_key, date_from, date_to, model_filter, lang=None):
     empty_df = pd.DataFrame(columns=[
         "System","Date","SO","Customer","Model Code","Product",
         "Qty","Unit Price","Subtotal","Total Amount","State"
@@ -1261,10 +1274,10 @@ def fetch_sales_for_system(system_key, date_from, date_to, model_filter):
     except Exception:
         return empty_df
 
-def fetch_sales_multi(selected_keys, date_from, date_to, model_filter):
+def fetch_sales_multi(selected_keys, date_from, date_to, model_filter, lang=None):
     results = []
     with ThreadPoolExecutor(max_workers=4) as ex:
-        futs = {ex.submit(fetch_sales_for_system, k, date_from, date_to, model_filter): k
+        futs = {ex.submit(fetch_sales_for_system, k, date_from, date_to, model_filter, lang): k
                 for k in selected_keys}
         for f in as_completed(futs):
             try:
@@ -1280,7 +1293,7 @@ def fetch_sales_multi(selected_keys, date_from, date_to, model_filter):
     return combined.sort_values("Date", ascending=False).reset_index(drop=True)
 
 # ─────────────────────────────────────────────────────────────────────────────
-# PREMIUM AI INSIGHTS PANEL
+# PREMIUM AI INSIGHTS PANEL (unchanged, safe)
 # ─────────────────────────────────────────────────────────────────────────────
 def _build_insight_block(rows_data):
     """Build an HTML insight card from key-value rows."""
@@ -1652,7 +1665,6 @@ def do_logout():
 # ─────────────────────────────────────────────────────────────────────────────
 def show_dashboard():
     theme = get_theme()
-    # Extra safety – ensure theme is valid (get_theme already fixed, but double-check)
     if theme not in THEMES:
         theme = "Dark Executive"
         st.session_state.theme = theme
@@ -1705,17 +1717,19 @@ def show_dashboard():
 
         st.divider()
 
-        # Data status
+        # Data status with timestamps (ENHANCEMENT)
         st.markdown(f"**📊 {t('Loaded Data','البيانات المحملة')}**")
         modules = [
-            ("📦", t("Inventory","المخزون"), st.session_state.get("inventory_df")),
-            ("🛒", t("POS","نقاط البيع"), st.session_state.get("pos_df")),
-            ("🛍️", t("Sales","المبيعات"), st.session_state.get("sales_df")),
-            ("🔖", t("Purchase","المشتريات"), st.session_state.get("purchase_df")),
+            ("📦", t("Inventory","المخزون"), st.session_state.get("inventory_df"), "inv_last_refresh"),
+            ("🛒", t("POS","نقاط البيع"), st.session_state.get("pos_df"), "pos_last_refresh"),
+            ("🛍️", t("Sales","المبيعات"), st.session_state.get("sales_df"), "sales_last_refresh"),
+            ("🔖", t("Purchase","المشتريات"), st.session_state.get("purchase_df"), "pur_last_refresh"),
         ]
-        for icon, name, df in modules:
+        for icon, name, df, ts_key in modules:
             if df is not None and not df.empty:
-                st.markdown(f"<span class='badge-ok'>{icon} {name} ({len(df):,})</span>", unsafe_allow_html=True)
+                ts = st.session_state.get(ts_key)
+                ts_str = f" ({ts.strftime('%H:%M')})" if ts else ""
+                st.markdown(f"<span class='badge-ok'>{icon} {name} ({len(df):,}){ts_str}</span>", unsafe_allow_html=True)
             else:
                 st.markdown(f"<span class='badge-warn'>{icon} {name} —</span>", unsafe_allow_html=True)
 
@@ -1741,10 +1755,13 @@ def show_dashboard():
     ])
 
     # =========================================================================
-    # INVENTORY TAB
+    # INVENTORY TAB (FIXED + ENHANCEMENTS)
     # =========================================================================
     with tab_inv:
         st.markdown(f"<div class='section-header'>📦 {t('Inventory Overview','نظرة عامة على المخزون')}</div>", unsafe_allow_html=True)
+
+        # ENHANCEMENT: Executive summary line
+        st.markdown(f"<div class='exec-summary-bar'>💡 {t('Monitor stock levels, identify slow movers, and manage replenishment across all branches.','مراقبة مستويات المخزون، تحديد المنتجات بطيئة الحركة، وإدارة إعادة التموين عبر جميع الفروع.')}</div>", unsafe_allow_html=True)
 
         co1, co2, co3 = st.columns([2, 2, 1])
         with co1:
@@ -1761,13 +1778,22 @@ def show_dashboard():
         fc1, fc2 = st.columns([3, 1])
         with fc1:
             model_filter = st.text_input(t("Model Code filter (optional)","فلتر رمز الموديل (اختياري)"), key="inv_model_filter").strip()
+        with fc2:
+            # ENHANCEMENT: Reset filter button
+            if st.button(t("Reset Filters","إعادة تعيين"), key="inv_reset_filters"):
+                st.session_state.inv_model_filter = ""
+                st.session_state.inv_company = t("All Companies","جميع الشركات")
+                st.session_state.inv_low_thresh = 5
+                st.session_state.inv_exact = False
+                st.rerun()
 
         inv_viz_mode = viz_mode_selector("inv_viz_mode")
 
         if st.button(f"🔄 {t('Refresh Inventory','تحديث المخزون')}", type="primary"):
             with st.spinner(t("Fetching inventory data...","جاري جلب بيانات المخزون...")):
                 codes = tuple([model_filter]) if model_filter else ()
-                raw_total_df, raw_branch_df = fetch_inventory_data(codestuple=codes, exact=exact_match)
+                # Pass current language to cache
+                raw_total_df, raw_branch_df = fetch_inventory_data(codestuple=codes, exact=exact_match, lang=st.session_state.lang)
 
                 # Filter by company
                 if raw_total_df is not None and not raw_total_df.empty:
@@ -1786,7 +1812,7 @@ def show_dashboard():
                                 end_d = datetime.now().date()
                                 start_d = end_d - timedelta(days=365)
                                 pur_sum = get_purchase_summary_by_model(
-                                    tuple(mc_vals), start_d.strftime("%Y-%m-%d"), end_d.strftime("%Y-%m-%d"))
+                                    tuple(mc_vals), start_d.strftime("%Y-%m-%d"), end_d.strftime("%Y-%m-%d"), lang=st.session_state.lang)
                                 if not pur_sum.empty:
                                     raw_total_df = raw_total_df.merge(pur_sum, on="Model Code", how="left")
                                     raw_total_df["Purchase Qty"] = raw_total_df["Purchase Qty"].fillna(0).astype(int)
@@ -1811,6 +1837,7 @@ def show_dashboard():
                 st.session_state.inventory_df = prepare_df(raw_total_df)
                 st.session_state.inventory_branch_df = prepare_df(raw_branch_df)
                 st.session_state.inv_page = 0
+                st.session_state.inv_last_refresh = datetime.now()
 
         total_df = st.session_state.get("inventory_df")
         branch_df = st.session_state.get("inventory_branch_df")
@@ -1898,14 +1925,14 @@ def show_dashboard():
                     )
 
     # =========================================================================
-    # POS TAB
+    # POS TAB (FIXED + ENHANCEMENTS)
     # =========================================================================
     with tab_pos:
         st.markdown(f"<div class='section-header'>🛒 {t('POS Sales Analytics','تحليلات مبيعات نقاط البيع')}</div>", unsafe_allow_html=True)
+        st.markdown(f"<div class='exec-summary-bar'>💡 {t('Real-time POS performance by branch, cashier, and product. Monitor daily revenue and customer behavior.','أداء نقاط البيع في الوقت الفعلي حسب الفرع والكاشير والمنتج. مراقبة الإيرادات اليومية وسلوك العملاء.')}</div>", unsafe_allow_html=True)
 
         pos_co_opts = [t("All Companies","جميع الشركات")] + [get_system_name(k) for k in SYSTEM_KEYS]
         pos_co = st.selectbox(t("Select Company","اختر الشركة"), options=pos_co_opts, index=0, key="pos_company")
-        # STRICT company filtering
         if pos_co == t("All Companies","جميع الشركات"):
             pos_keys = SYSTEM_KEYS
         else:
@@ -1923,14 +1950,20 @@ def show_dashboard():
         with pfc2:
             pos_model_filter = st.text_input(t("Model Code (optional)","رمز الموديل (اختياري)"), key="pos_model_filter").strip()
 
+        # ENHANCEMENT: Reset filters
+        if st.button(t("Reset Filters","إعادة تعيين"), key="pos_reset_filters"):
+            st.session_state.pos_branch_filter = ""
+            st.session_state.pos_model_filter = ""
+            st.session_state.pos_company = t("All Companies","جميع الشركات")
+            st.rerun()
+
         pos_viz_mode = viz_mode_selector("pos_viz_mode")
 
         if st.button(f"🔄 {t('Refresh POS Data','تحديث بيانات نقاط البيع')}", type="primary"):
             with st.spinner(t("Fetching POS data...","جاري جلب بيانات نقاط البيع...")):
                 raw_pos = fetch_pos_multi(pos_keys, pos_date_from.strftime("%Y-%m-%d"),
                                           pos_date_to.strftime("%Y-%m-%d"),
-                                          pos_branch_filter, pos_model_filter)
-                # STRICT: filter to only selected company's data by System column
+                                          pos_branch_filter, pos_model_filter, lang=st.session_state.lang)
                 if raw_pos is not None and not raw_pos.empty and pos_co != t("All Companies","جميع الشركات"):
                     allowed_systems = {get_system_name(k) for k in pos_keys}
                     if "System" in raw_pos.columns:
@@ -1938,6 +1971,7 @@ def show_dashboard():
 
                 st.session_state.pos_df = prepare_df(raw_pos)
                 st.session_state.pos_page = 0
+                st.session_state.pos_last_refresh = datetime.now()
 
         pos_df = st.session_state.get("pos_df")
 
@@ -1966,7 +2000,6 @@ def show_dashboard():
             m4.metric(t("Avg Bill (SAR)","متوسط الفاتورة (ر.س)"), f"{avg_bill:,.2f}")
             st.divider()
 
-            # Company filter indicator
             if pos_co != t("All Companies","جميع الشركات"):
                 st.markdown(f"<div class='ok-banner'>✅ {t('Showing data for','عرض بيانات')} <b>{pos_co}</b> {t('only','فقط')}</div>", unsafe_allow_html=True)
 
@@ -2042,10 +2075,11 @@ def show_dashboard():
                                    "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet", use_container_width=True)
 
     # =========================================================================
-    # SALES TAB
+    # SALES TAB (FIXED + ENHANCEMENTS)
     # =========================================================================
     with tab_sales:
         st.markdown(f"<div class='section-header'>🛍️ {t('Sales Orders Analytics','تحليلات أوامر البيع')}</div>", unsafe_allow_html=True)
+        st.markdown(f"<div class='exec-summary-bar'>💡 {t('Track revenue, top customers, product performance, and order trends. Identify growth opportunities.','تتبع الإيرادات، أفضل العملاء، أداء المنتجات، واتجاهات الطلبات. تحديد فرص النمو.')}</div>", unsafe_allow_html=True)
 
         sales_co_opts = [t("All Companies","جميع الشركات")] + [get_system_name(k) for k in SYSTEM_KEYS]
         sales_co = st.selectbox(t("Select Company","اختر الشركة"), options=sales_co_opts, index=0, key="sales_company")
@@ -2059,13 +2093,19 @@ def show_dashboard():
             sales_date_to = st.date_input(t("To","إلى"), value=datetime.now().date(), key="sales_date_to")
 
         sales_model_filter = st.text_input(t("Model Code filter (optional)","فلتر رمز الموديل (اختياري)"), key="sales_model_filter").strip()
+
+        # ENHANCEMENT: Reset filters
+        if st.button(t("Reset Filters","إعادة تعيين"), key="sales_reset_filters"):
+            st.session_state.sales_model_filter = ""
+            st.session_state.sales_company = t("All Companies","جميع الشركات")
+            st.rerun()
+
         sales_viz_mode = viz_mode_selector("sales_viz_mode")
 
         if st.button(f"🔄 {t('Refresh Sales Data','تحديث بيانات المبيعات')}", type="primary"):
             with st.spinner(t("Fetching sales data...","جاري جلب بيانات المبيعات...")):
                 raw_sales = fetch_sales_multi(sales_keys, sales_date_from.strftime("%Y-%m-%d"),
-                                              sales_date_to.strftime("%Y-%m-%d"), sales_model_filter)
-                # Additional company filter via System column
+                                              sales_date_to.strftime("%Y-%m-%d"), sales_model_filter, lang=st.session_state.lang)
                 if raw_sales is not None and not raw_sales.empty and sales_co != t("All Companies","جميع الشركات"):
                     allowed_systems = {get_system_name(k) for k in sales_keys}
                     if "System" in raw_sales.columns:
@@ -2073,6 +2113,7 @@ def show_dashboard():
 
                 st.session_state.sales_df = prepare_df(raw_sales)
                 st.session_state.sales_page = 0
+                st.session_state.sales_last_refresh = datetime.now()
 
         sales_df = st.session_state.get("sales_df")
 
@@ -2087,12 +2128,15 @@ def show_dashboard():
             so_col = t("SO","أمر بيع")
             sub_col = t("Subtotal","المجموع الفرعي")
 
-            # Use unique SO for order-level aggregations to avoid double counting
+            # Defensive: ensure required columns exist
+            if so_col not in sales_df.columns:
+                st.warning(f"Missing column: {so_col}. Please check data.")
+                return
+
             unique_so = (sales_df.drop_duplicates(subset=[so_col])
                          if so_col in sales_df.columns else sales_df)
             total_sales_amt = float(unique_so[total_col].sum()) if total_col in unique_so.columns else 0
             total_orders = int(unique_so[so_col].nunique()) if so_col in unique_so.columns else len(unique_so)
-            # Line-level qty is correct as-is
             total_qty_v = float(sales_df[qty_col].sum()) if qty_col in sales_df.columns else 0
             avg_order = total_sales_amt / total_orders if total_orders > 0 else 0
 
@@ -2160,10 +2204,11 @@ def show_dashboard():
                                    "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet", use_container_width=True)
 
     # =========================================================================
-    # PURCHASE TAB
+    # PURCHASE TAB (FIXED + ENHANCEMENTS)
     # =========================================================================
     with tab_pur:
         st.markdown(f"<div class='section-header'>🔖 {t('Purchase Analytics','تحليلات المشتريات')}</div>", unsafe_allow_html=True)
+        st.markdown(f"<div class='exec-summary-bar'>💡 {t('Analyze vendor spending, receipt locations, and purchase trends. Optimize procurement costs.','تحليل إنفاق الموردين، مواقع الاستلام، واتجاهات الشراء. تحسين تكاليف التوريد.')}</div>", unsafe_allow_html=True)
 
         pur_co_opts = [t("All Companies","جميع الشركات")] + [get_system_name(k) for k in SYSTEM_KEYS]
         pur_co = st.selectbox(t("Select Company","اختر الشركة"), options=pur_co_opts, index=0, key="pur_company")
@@ -2171,6 +2216,12 @@ def show_dashboard():
                     else [k for k in SYSTEM_KEYS if get_system_name(k) == pur_co])
 
         pur_model = st.text_input(t("Model Code filter (optional)","فلتر رمز الموديل (اختياري)"), key="pur_model").strip()
+
+        # ENHANCEMENT: Reset filters
+        if st.button(t("Reset Filters","إعادة تعيين"), key="pur_reset_filters"):
+            st.session_state.pur_model = ""
+            st.session_state.pur_company = t("All Companies","جميع الشركات")
+            st.rerun()
 
         pc1, pc2 = st.columns(2)
         with pc1:
@@ -2184,7 +2235,7 @@ def show_dashboard():
             with st.spinner(t("Fetching purchase data...","جاري جلب بيانات المشتريات...")):
                 raw_pur = fetch_purchase_multi(pur_keys, pur_model,
                                                pur_date_from.strftime("%Y-%m-%d"),
-                                               pur_date_to.strftime("%Y-%m-%d"))
+                                               pur_date_to.strftime("%Y-%m-%d"), lang=st.session_state.lang)
                 if raw_pur is not None and not raw_pur.empty and pur_co != t("All Companies","جميع الشركات"):
                     allowed_systems = {get_system_name(k) for k in pur_keys}
                     if "System" in raw_pur.columns:
@@ -2192,6 +2243,7 @@ def show_dashboard():
 
                 st.session_state.purchase_df = prepare_df(raw_pur)
                 st.session_state.pur_page = 0
+                st.session_state.pur_last_refresh = datetime.now()
 
         pur_df = st.session_state.get("purchase_df")
 
@@ -2204,6 +2256,14 @@ def show_dashboard():
             mc = t("Model Code","رمز الموديل")
             date_col = t("Date","التاريخ")
             loc_col = t("Receipt Location","موقع الاستلام")
+
+            # Defensive checks
+            if qty_col_pur not in pur_df.columns:
+                st.warning(f"Missing column: {qty_col_pur}. Using 0.")
+                pur_df[qty_col_pur] = 0
+            if sub_col_pur not in pur_df.columns:
+                st.warning(f"Missing column: {sub_col_pur}. Using 0.")
+                pur_df[sub_col_pur] = 0
 
             total_p_qty = int(pd.to_numeric(pur_df.get(qty_col_pur, pd.Series()), errors="coerce").fillna(0).sum())
             total_p_val = float(pd.to_numeric(pur_df.get(sub_col_pur, pd.Series()), errors="coerce").fillna(0).sum())
@@ -2279,7 +2339,7 @@ def show_dashboard():
                                    "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet", use_container_width=True)
 
     # =========================================================================
-    # AI INSIGHTS TAB
+    # AI INSIGHTS TAB (unchanged, safe)
     # =========================================================================
     with tab_chat:
         show_chat_panel()
