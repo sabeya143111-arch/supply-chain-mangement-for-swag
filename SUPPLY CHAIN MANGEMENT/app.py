@@ -1613,8 +1613,8 @@ def get_ai_response(user_msg: str) -> tuple:
             data.append((t("🔖 Purchase Spend (SAR)","🔖 إنفاق المشتريات (ر.س)"),
                          f"{safe_get_col(pur_df,'Subtotal').sum():,.0f}"))
         insight = _insight_block(data) if data else None
-        return (t(f"💎 Executive Overview — {len(data)} modules loaded",
-                  f"💎 نظرة تنفيذية — {len(data)} وحدات محملة"), insight)
+        return (t(f" Executive Overview — {len(data)} modules loaded",
+                  f" نظرة تنفيذية — {len(data)} وحدات محملة"), insight)
 
     return (t(
         "🤖 Ask me about: inventory summary, zero stock, low stock, POS branch sales, top customers, vendor ranking, or 'executive overview'.",
@@ -1644,7 +1644,7 @@ def show_chat_panel():
     st.markdown(history_html, unsafe_allow_html=True)
 
     chip_actions = [
-        (t("💎 Overview","💎 نظرة عامة"),       t("executive overview","نظرة تنفيذية")),
+        (t(" Overview"," نظرة عامة"),       t("executive overview","نظرة تنفيذية")),
         (t("📦 Inventory","📦 المخزون"),          t("inventory summary","ملخص المخزون")),
         (t("🔴 Zero Stock","🔴 مخزون صفر"),       t("zero stock","مخزون صفر")),
         (t("🛒 POS Branches","🛒 فروع POS"),      t("POS branch sales","مبيعات فروع POS")),
