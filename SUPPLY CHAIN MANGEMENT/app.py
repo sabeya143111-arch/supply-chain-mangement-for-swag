@@ -1734,7 +1734,7 @@ def show_dashboard():
             f"<div style='background:{th('card_bg')};border:1px solid {th('border')};"
             f"border-radius:14px;padding:14px;margin-bottom:16px;text-align:center;'>"
             f"<div style='font-size:1.8rem;'>💎</div>"
-            f"<div style='font-size:0.88rem;font-weight:700;color:{th('text')};'>Executive Dashboard</div>"
+            f"<div style='font-size:0.88rem;font-weight:700;color:{th('text')};'>SWAG DASHBARD</div>"
             f"<div style='font-size:0.7rem;color:{th('text_muted')};'>{st.session_state.user_email}</div>"
             f"</div>",
             unsafe_allow_html=True,
@@ -1803,7 +1803,7 @@ def show_dashboard():
     # ── HEADER ────────────────────────────────────────────────────────────────
     st.markdown(
         f"<div class='dash-header'>"
-        f"<div class='dash-title'>SWAG — EXECUTIVE DASHBOARD</div>"
+        f"<div class='dash-title'>SWAG — SWAG DASBAORD</div>"
         f"<div class='dash-subtitle'>"
         f"{t('Multi-Company · Inventory · POS · Sales · Purchase · AI Insights','متعدد الشركات · المخزون · نقاط البيع · المبيعات · المشتريات · تحليلات ذكية')}"
         f"</div></div>",
