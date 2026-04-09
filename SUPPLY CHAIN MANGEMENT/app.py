@@ -20,7 +20,7 @@ st.set_page_config(
 )
 
 # -----------------------------------------------------------------------------
-# 1. THEMES (unchanged)
+# 1. THEMES
 # -----------------------------------------------------------------------------
 THEMES = {
     "Dark Executive": {
@@ -136,7 +136,7 @@ def th_color(key, fallback="#667eea"):
     return f"#{m.group(1)}" if m else fallback
 
 # -----------------------------------------------------------------------------
-# 2. CSS (unchanged)
+# 2. CSS
 # -----------------------------------------------------------------------------
 def build_css():
     return f"""
@@ -264,7 +264,7 @@ RAW_COLS = {
 }
 
 # -----------------------------------------------------------------------------
-# 4. LANGUAGE / LOCALIZATION (unchanged)
+# 4. LANGUAGE / LOCALIZATION
 # -----------------------------------------------------------------------------
 def get_lang():
     return st.session_state.get("lang", "EN")
@@ -316,7 +316,7 @@ def localize_df(df: pd.DataFrame) -> pd.DataFrame:
     return df.rename(columns=rename) if rename else df
 
 # -----------------------------------------------------------------------------
-# 5. SESSION STATE DEFAULTS (simplified)
+# 5. SESSION STATE DEFAULTS
 # -----------------------------------------------------------------------------
 _DEFAULTS = {
     "authenticated": False,
@@ -437,7 +437,7 @@ def _odoo_call(model: str, method: str, domain: list, kwargs: dict):
     return proxy.execute_kw(db, uid, api_key, model, method, domain, kwargs)
 
 # -----------------------------------------------------------------------------
-# 8. DATA UTILITIES (unchanged but with safer column handling)
+# 8. DATA UTILITIES
 # -----------------------------------------------------------------------------
 _NUMERIC_RAW = ["Sale Price", "On Hand", "Purchase Qty", "Qty", "Unit Price", "Subtotal", "Total Amount"]
 
@@ -514,7 +514,7 @@ def dl_name(prefix: str, ext: str) -> str:
     return f"{prefix}_{datetime.now().strftime('%Y%m%d_%H%M%S')}.{ext}"
 
 # -----------------------------------------------------------------------------
-# 9. PAGINATED TABLE RENDERER (unchanged)
+# 9. PAGINATED TABLE RENDERER
 # -----------------------------------------------------------------------------
 def render_paginated_table(df: pd.DataFrame, page_key: str, rows_per_page: int = ROWS_PER_PAGE):
     if df is None or df.empty:
@@ -549,7 +549,7 @@ def render_paginated_table(df: pd.DataFrame, page_key: str, rows_per_page: int =
         st.session_state[page_key] = total_pages - 1; st.rerun()
 
 # -----------------------------------------------------------------------------
-# 10. VISUALIZATION ENGINE (unchanged, but removed System column references)
+# 10. VISUALIZATION ENGINE
 # -----------------------------------------------------------------------------
 def apply_plotly_theme(fig):
     if fig is None:
@@ -1027,7 +1027,7 @@ def fetch_sales(date_from: str, date_to: str, model_filter: str):
         return pd.DataFrame(), f"Error fetching sales: {type(e).__name__}: {e}"
 
 # -----------------------------------------------------------------------------
-# 12. AI INSIGHTS (unchanged but adapted to SWAG-only)
+# 12. AI INSIGHTS
 # -----------------------------------------------------------------------------
 def _insight_block(rows_data: list) -> str:
     inner = "".join(f"<div class='chat-insight-row'><span class='chat-insight-key'>{k}</span><span class='chat-insight-val'>{v}</span></div>" for k, v in rows_data)
@@ -1183,7 +1183,7 @@ def show_chat_panel():
             st.rerun()
 
 # -----------------------------------------------------------------------------
-# 13. LOGIN PAGE (unchanged)
+# 13. LOGIN PAGE
 # -----------------------------------------------------------------------------
 def show_login():
     st.markdown(build_css(), unsafe_allow_html=True)
@@ -1218,7 +1218,7 @@ def show_login():
         st.markdown("</div>", unsafe_allow_html=True)
 
 # -----------------------------------------------------------------------------
-# 14. DASHBOARD (SWAG-ONLY, SIMPLIFIED UI)
+# 14. DASHBOARD (SWAG-ONLY)
 # -----------------------------------------------------------------------------
 def show_dashboard():
     st.markdown(build_css(), unsafe_allow_html=True)
@@ -1232,7 +1232,6 @@ def show_dashboard():
         st.divider()
         new_lang = st.radio(f"🌐 {t('Language','اللغة')}", ["EN","AR"], index=0 if get_lang() == "EN" else 1, horizontal=True)
         if new_lang != get_lang():
-            # Clear cached data when language changes
             for k in ["inventory_df","inventory_branch_df","pos_df","sales_df","purchase_df","diag_msg"]:
                 st.session_state[k] = None if "df" in k else ""
             st.session_state.lang = new_lang
