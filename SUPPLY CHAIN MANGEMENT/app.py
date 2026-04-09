@@ -1,27 +1,29 @@
-# app.py — SWAG EXECUTIVE DASHBOARD — STABLE v4.0 (SWAG‑ONLY)
-# Fully refactored for single Odoo database (SWAG), crash‑free and performant.
+# app.py — SWAG EXECUTIVE DASHBOARD — STABLE v3.1
+# Full corrected file - Architecture 100% preserved, all bugs fixed
 
 import io
 import re
 import hashlib
+import time
 import math
 import xmlrpc.client
 from datetime import datetime, timedelta
+from concurrent.futures import ThreadPoolExecutor, as_completed
 import pandas as pd
 import plotly.express as px
 import plotly.graph_objects as go
 import streamlit as st
 
 st.set_page_config(
-    page_title="SWAG Executive Dashboard",
-    page_icon="💎",
+    page_title="Swag Side bar",
+    page_icon="@",
     layout="wide",
     initial_sidebar_state="expanded",
 )
 
-# -----------------------------------------------------------------------------
-# 1. THEMES
-# -----------------------------------------------------------------------------
+# ─────────────────────────────────────────────────────────────────────────────
+# SECTION 1: THEMES
+# ─────────────────────────────────────────────────────────────────────────────
 THEMES = {
     "Dark Executive": {
         "bg": "linear-gradient(135deg,#0f0c29,#302b63,#24243e)",
@@ -135,9 +137,9 @@ def th_color(key, fallback="#667eea"):
     m = re.search(r"#([0-9a-fA-F]{3}|[0-9a-fA-F]{6})", val)
     return f"#{m.group(1)}" if m else fallback
 
-# -----------------------------------------------------------------------------
-# 2. CSS
-# -----------------------------------------------------------------------------
+# ─────────────────────────────────────────────────────────────────────────────
+# SECTION 2: CSS
+# ─────────────────────────────────────────────────────────────────────────────
 def build_css():
     return f"""
     <style>
@@ -227,12 +229,11 @@ def build_css():
     </style>
     """
 
-# -----------------------------------------------------------------------------
-# 3. CONSTANTS & CONFIG (SWAG-ONLY)
-# -----------------------------------------------------------------------------
-SYSTEM_NAME = "SWAG"  # Single system
+# ─────────────────────────────────────────────────────────────────────────────
+# SECTION 3: CONSTANTS & CONFIG
+# ─────────────────────────────────────────────────────────────────────────────
+SYSTEM_KEYS = ["SWAG", "LAROUCHE", "DIFFC", "FASHION_LIMITS"]
 ROWS_PER_PAGE = 30
-
 VIZ_MODES = [
     "📋 List View", "🏆 KPI Tiles", "📊 Column Chart", "📉 Horizontal Bar",
     "📈 Line Chart", "📉 Area Chart", "🍕 Pie Chart", "🍩 Donut Chart",
@@ -240,11 +241,12 @@ VIZ_MODES = [
 ]
 
 RAW_COLS = {
+    "system": "System",
     "model_code": "Model Code",
     "product": "Product",
     "sale_price": "Sale Price",
     "on_hand": "On Hand",
-    "purchase_qty": "Purchase Qty",
+    "purchase_qty_col": "Purchase Qty",
     "branch": "Branch",
     "location": "Location",
     "date": "Date",
@@ -263,9 +265,9 @@ RAW_COLS = {
     "state": "State",
 }
 
-# -----------------------------------------------------------------------------
-# 4. LANGUAGE / LOCALIZATION
-# -----------------------------------------------------------------------------
+# ─────────────────────────────────────────────────────────────────────────────
+# SECTION 4: LANGUAGE / LOCALIZATION
+# ─────────────────────────────────────────────────────────────────────────────
 def get_lang():
     return st.session_state.get("lang", "EN")
 
@@ -273,6 +275,7 @@ def t(en, ar):
     return ar if get_lang() == "AR" else en
 
 _COL_MAP = {
+    "System": ("System", "النظام"),
     "Model Code": ("Model Code", "رمز الموديل"),
     "Product": ("Product", "المنتج"),
     "Sale Price": ("Sale Price", "سعر البيع"),
@@ -315,9 +318,15 @@ def localize_df(df: pd.DataFrame) -> pd.DataFrame:
             rename[raw] = ar if get_lang() == "AR" else en
     return df.rename(columns=rename) if rename else df
 
-# -----------------------------------------------------------------------------
-# 5. SESSION STATE DEFAULTS
-# -----------------------------------------------------------------------------
+def get_system_name(key: str) -> str:
+    cfg = st.secrets.get(key, {})
+    if get_lang() == "AR":
+        return cfg.get("name_ar", cfg.get("name", key))
+    return cfg.get("name", key)
+
+# ─────────────────────────────────────────────────────────────────────────────
+# SECTION 5: SESSION STATE DEFAULTS
+# ─────────────────────────────────────────────────────────────────────────────
 _DEFAULTS = {
     "authenticated": False,
     "user_email": "",
@@ -328,7 +337,10 @@ _DEFAULTS = {
     "pos_df": None,
     "sales_df": None,
     "purchase_df": None,
-    "diag_msg": "",
+    "inv_diag": [],
+    "pos_diag": [],
+    "sales_diag": [],
+    "pur_diag": [],
     "inv_last_refresh": None,
     "pos_last_refresh": None,
     "sales_last_refresh": None,
@@ -349,14 +361,15 @@ _DEFAULTS = {
     "chat_history": [],
     "login_error": "",
 }
-for k, v in _DEFAULTS.items():
-    if k not in st.session_state:
-        st.session_state[k] = v
 
-# -----------------------------------------------------------------------------
-# 6. AUTHENTICATION (SWAG-ONLY)
-# -----------------------------------------------------------------------------
-_COOKIE_SECRET = "swag_exec_2025_v4"
+for _k, _v in _DEFAULTS.items():
+    if _k not in st.session_state:
+        st.session_state[_k] = _v
+
+# ─────────────────────────────────────────────────────────────────────────────
+# SECTION 6: AUTH
+# ─────────────────────────────────────────────────────────────────────────────
+_COOKIE_SECRET = "swag_exec_2025_v3"
 
 def _make_token(email: str) -> str:
     return hashlib.sha256(f"{_COOKIE_SECRET}_{email}".encode()).hexdigest()[:32]
@@ -380,20 +393,38 @@ def restore_session():
 def attempt_login(email: str, password: str) -> tuple[bool, str]:
     if not email or not password:
         return False, t("Please enter email and password.", "يرجى إدخال البريد الإلكتروني وكلمة المرور.")
-    cfg = st.secrets.get("SWAG")
-    if not cfg or not cfg.get("url") or not cfg.get("db"):
-        return False, t("SWAG connection not configured in secrets. Contact administrator.", "اتصال SWAG غير مُكوَّن. تواصل مع المسؤول.")
-    url = cfg.get("url", "").rstrip("/")
-    db = cfg.get("db", "")
-    try:
-        proxy = xmlrpc.client.ServerProxy(f"{url}/xmlrpc/2/common", allow_none=True)
-        uid = proxy.authenticate(db, email, password, {})
-        if uid and isinstance(uid, int) and uid > 0:
-            return True, ""
-        else:
-            return False, t(f"Login failed for {email} on {db}. Wrong credentials.", f"فشل تسجيل الدخول لـ {email} على {db}. بيانات خاطئة.")
-    except Exception as e:
-        return False, f"Odoo connection error: {e}"
+    login_candidates = []
+    if "LOGIN" in st.secrets:
+        login_candidates.append(("LOGIN", st.secrets["LOGIN"]))
+    for key in SYSTEM_KEYS:
+        cfg = st.secrets.get(key)
+        if cfg and cfg.get("url") and cfg.get("db"):
+            login_candidates.append((key, cfg))
+    if not login_candidates:
+        return False, t("No Odoo connection configured in secrets. Contact administrator.", "لا يوجد اتصال Odoo مُكوَّن. تواصل مع المسؤول.")
+    last_error = ""
+    for source_key, cfg in login_candidates:
+        url = cfg.get("url", "").rstrip("/")
+        db = cfg.get("db", "")
+        if not url or not db:
+            last_error = f"[{source_key}] Missing url or db in secrets."
+            continue
+        try:
+            proxy = xmlrpc.client.ServerProxy(f"{url}/xmlrpc/2/common", allow_none=True)
+            uid = proxy.authenticate(db, email, password, {})
+            if uid and isinstance(uid, int) and uid > 0:
+                return True, ""
+            else:
+                last_error = t(f"Login failed for {email} on {db}. Wrong credentials.", f"فشل تسجيل الدخول لـ {email} على {db}. بيانات خاطئة.")
+        except xmlrpc.client.Fault as e:
+            last_error = f"[{source_key}] Odoo error: {e.faultString}"
+        except ConnectionRefusedError:
+            last_error = f"[{source_key}] Connection refused: {url}"
+        except OSError as e:
+            last_error = f"[{source_key}] Network error: {e}"
+        except Exception as e:
+            last_error = f"[{source_key}] Unexpected error: {type(e).__name__}: {e}"
+    return False, last_error
 
 def do_logout():
     for key in list(st.session_state.keys()):
@@ -404,41 +435,47 @@ def do_logout():
         pass
     st.rerun()
 
-# -----------------------------------------------------------------------------
-# 7. ODOO CONNECTION HELPERS (SWAG-ONLY, CACHED)
-# -----------------------------------------------------------------------------
+# ─────────────────────────────────────────────────────────────────────────────
+# SECTION 7: XML-RPC HELPERS
+# ─────────────────────────────────────────────────────────────────────────────
 @st.cache_resource
-def _get_swag_connection():
-    """Returns (url, db, uid, api_key, error_msg) for SWAG."""
-    cfg = st.secrets.get("SWAG")
+def _get_proxy(url: str, endpoint: str):
+    return xmlrpc.client.ServerProxy(f"{url.rstrip('/')}/xmlrpc/2/{endpoint}", allow_none=True)
+
+@st.cache_data(ttl=28800, show_spinner=False)
+def _odoo_auth(url: str, db: str, user: str, api_key: str):
+    try:
+        uid = _get_proxy(url, "common").authenticate(db, user, api_key, {})
+        return uid if (uid and isinstance(uid, int) and uid > 0) else None
+    except Exception:
+        return None
+
+def _odoo_call(url: str, db: str, uid: int, api_key: str, model: str, method: str, domain: list, kwargs: dict):
+    return _get_proxy(url, "object").execute_kw(db, uid, api_key, model, method, domain, kwargs)
+
+def _get_system_conn(key: str) -> tuple:
+    cfg = st.secrets.get(key)
     if not cfg:
-        return None, None, None, None, "SWAG not configured in secrets."
+        return None, None, None, None, key, f"[{key}] Not configured in secrets."
     url = cfg.get("url", "").rstrip("/")
     db = cfg.get("db", "")
     user = cfg.get("user", "")
     api_key = cfg.get("api_key", "")
-    if not url or not db or not user or not api_key:
-        return None, None, None, None, "Missing SWAG credentials (url, db, user, api_key)."
-    try:
-        proxy = xmlrpc.client.ServerProxy(f"{url}/xmlrpc/2/common", allow_none=True)
-        uid = proxy.authenticate(db, user, api_key, {})
-        if not uid or not isinstance(uid, int) or uid <= 0:
-            return url, db, None, api_key, f"Auth failed for SWAG: user/api_key invalid."
-        return url, db, uid, api_key, None
-    except Exception as e:
-        return url, db, None, api_key, f"Connection error: {e}"
+    name = get_system_name(key)
+    if not url:
+        return None, None, None, None, name, f"[{key}] Missing 'url' in secrets."
+    if not db:
+        return None, None, None, None, name, f"[{key}] Missing 'db' in secrets."
+    if not user or not api_key:
+        return None, None, None, None, name, f"[{key}] Missing 'user' or 'api_key' in secrets."
+    uid = _odoo_auth(url, db, user, api_key)
+    if not uid:
+        return url, db, None, api_key, name, f"[{key}] Auth failed — bad user/api_key or wrong DB '{db}'."
+    return url, db, uid, api_key, name, None
 
-def _odoo_call(model: str, method: str, domain: list, kwargs: dict):
-    """Execute a generic Odoo XML‑RPC call using cached SWAG connection."""
-    url, db, uid, api_key, err = _get_swag_connection()
-    if err:
-        raise RuntimeError(f"Cannot connect to SWAG: {err}")
-    proxy = xmlrpc.client.ServerProxy(f"{url}/xmlrpc/2/object", allow_none=True)
-    return proxy.execute_kw(db, uid, api_key, model, method, domain, kwargs)
-
-# -----------------------------------------------------------------------------
-# 8. DATA UTILITIES
-# -----------------------------------------------------------------------------
+# ─────────────────────────────────────────────────────────────────────────────
+# SECTION 8: DATA UTILITIES
+# ─────────────────────────────────────────────────────────────────────────────
 _NUMERIC_RAW = ["Sale Price", "On Hand", "Purchase Qty", "Qty", "Unit Price", "Subtotal", "Total Amount"]
 
 def coerce_numerics(df: pd.DataFrame) -> pd.DataFrame:
@@ -513,9 +550,9 @@ def to_excel_branch_matrix(branch_df: pd.DataFrame) -> bytes:
 def dl_name(prefix: str, ext: str) -> str:
     return f"{prefix}_{datetime.now().strftime('%Y%m%d_%H%M%S')}.{ext}"
 
-# -----------------------------------------------------------------------------
-# 9. PAGINATED TABLE RENDERER
-# -----------------------------------------------------------------------------
+# ─────────────────────────────────────────────────────────────────────────────
+# SECTION 9: PAGINATED TABLE RENDERER
+# ─────────────────────────────────────────────────────────────────────────────
 def render_paginated_table(df: pd.DataFrame, page_key: str, rows_per_page: int = ROWS_PER_PAGE):
     if df is None or df.empty:
         st.markdown(f"<div class='info-banner'>ℹ️ {t('No data to display.','لا توجد بيانات للعرض.')}</div>", unsafe_allow_html=True)
@@ -539,18 +576,18 @@ def render_paginated_table(df: pd.DataFrame, page_key: str, rows_per_page: int =
     st.markdown(f"<div class='dataframe-wrap'><table><thead><tr>{header_html}</tr></thead><tbody>{rows_html}</tbody></table></div>", unsafe_allow_html=True)
     st.markdown(f"<div class='pagination-bar'><span class='page-info'>{t('Showing','عرض')} {start+1}–{end} {t('of','من')} {total_rows} | {t('Page','صفحة')} {current+1}/{total_pages}</span></div>", unsafe_allow_html=True)
     c1, c2, _, c4, c5 = st.columns([1, 1, 2, 1, 1])
-    if c1.button("⏮", key=f"{page_key}_first", use_container_width=True):
+    if c1.button(f"⏮", key=f"{page_key}_first", use_container_width=True):
         st.session_state[page_key] = 0; st.rerun()
-    if c2.button("◀", key=f"{page_key}_prev", use_container_width=True):
+    if c2.button(f"◀", key=f"{page_key}_prev", use_container_width=True):
         st.session_state[page_key] = max(0, current - 1); st.rerun()
-    if c4.button("▶", key=f"{page_key}_next", use_container_width=True):
+    if c4.button(f"▶", key=f"{page_key}_next", use_container_width=True):
         st.session_state[page_key] = min(total_pages - 1, current + 1); st.rerun()
-    if c5.button("⏭", key=f"{page_key}_last", use_container_width=True):
+    if c5.button(f"⏭", key=f"{page_key}_last", use_container_width=True):
         st.session_state[page_key] = total_pages - 1; st.rerun()
 
-# -----------------------------------------------------------------------------
-# 10. VISUALIZATION ENGINE
-# -----------------------------------------------------------------------------
+# ─────────────────────────────────────────────────────────────────────────────
+# SECTION 10: VISUALIZATION ENGINE
+# ─────────────────────────────────────────────────────────────────────────────
 def apply_plotly_theme(fig):
     if fig is None:
         return fig
@@ -618,8 +655,11 @@ def render_visualization(df: pd.DataFrame, viz_mode: str, x_raw: str, y_raw: str
         fig = px.pie(top_n, names=x_col, values=y_col, hole=0.55, title=label, color_discrete_sequence=colors, template=tmpl)
         fig.update_traces(textposition="inside", textinfo="percent+label")
     elif viz_mode == "📊 Stacked Column":
-        if color_raw and has_col(df_plot, color_raw):
+        sys_col = get_display_col(df_plot, "System")
+        if color_raw:
             stack_by = get_display_col(df_plot, color_raw)
+        elif sys_col in df_plot.columns:
+            stack_by = sys_col
         else:
             stack_by = None
         if stack_by and stack_by in df_plot.columns:
@@ -706,22 +746,30 @@ def render_exec_summary(df: pd.DataFrame, value_raw: str, label_raw: str, sectio
                          f"<b style='color:{th_color('danger','#f43f5e')}'>{row[value_c]:,.0f}</b></div>")
             st.markdown(html + "</div>", unsafe_allow_html=True)
 
-def show_diag(diag_msg: str):
-    if diag_msg:
-        with st.expander(f"ℹ️ {t('Load Diagnostics','تشخيص التحميل')}"):
-            st.markdown(f"`{diag_msg}`")
+def show_diag(diag_list: list):
+    if not diag_list:
+        return
+    has_err = any(d.get("level") == "error" for d in diag_list)
+    has_ok = any(d.get("level") == "ok" for d in diag_list)
+    if has_err:
+        with st.expander(f"⚠️ {t('Load Diagnostics (errors found)','تشخيص التحميل (توجد أخطاء)')}"):
+            for d in diag_list:
+                icon = "✅" if d.get("level") == "ok" else ("❌" if d.get("level") == "error" else "ℹ️")
+                st.markdown(f"`{icon} [{d.get('system','')}] {d.get('msg','')}`")
+    elif has_ok:
+        with st.expander(f"✅ {t('Load Diagnostics (all OK)','تشخيص التحميل (كل شيء سليم)')}"):
+            for d in diag_list:
+                st.markdown(f"`✅ [{d.get('system','')}] {d.get('msg','')}`")
 
-# -----------------------------------------------------------------------------
-# 11. DATA FETCHERS (SWAG-ONLY, SINGLE THREAD, SAFE)
-# -----------------------------------------------------------------------------
+# ─────────────────────────────────────────────────────────────────────────────
+# SECTION 11: DATA FETCHERS
+# ─────────────────────────────────────────────────────────────────────────────
 @st.cache_data(ttl=1800, show_spinner=False)
-def fetch_inventory(codes_tuple: tuple = (), exact: bool = False):
-    """Fetch inventory for SWAG only. Returns (total_df, branch_df, diag_msg)."""
+def _fetch_inventory_one(key: str, codes_tuple: tuple, exact: bool) -> tuple:
+    url, db, uid, ak, name, err = _get_system_conn(key)
+    if err:
+        return [], [], {"system": name, "level": "error", "msg": err}
     try:
-        url, db, uid, api_key, err = _get_swag_connection()
-        if err:
-            return pd.DataFrame(), pd.DataFrame(), err
-        # Build product domain
         prod_domain = []
         if codes_tuple:
             if exact:
@@ -729,19 +777,15 @@ def fetch_inventory(codes_tuple: tuple = (), exact: bool = False):
             else:
                 clauses = [("default_code", "=ilike", f"{c}%") for c in codes_tuple]
                 prod_domain = [clauses[0]] if len(clauses) == 1 else ["|"] * (len(clauses) - 1) + clauses
-        products = _odoo_call("product.template", "search_read", [prod_domain if prod_domain else []],
-                              {"fields": ["id","name","default_code","list_price"], "limit": 5000})
+        products = _odoo_call(url, db, uid, ak, "product.template", "search_read", [prod_domain if prod_domain else []], {"fields": ["id","name","default_code","list_price"], "limit": 5000})
         if not products:
-            return pd.DataFrame(), pd.DataFrame(), "No products found."
+            return [], [], {"system": name, "level": "ok", "msg": f"No products found."}
         prod_ids = [p["id"] for p in products]
         tmpl_to_model = {p["id"]: (p.get("default_code") or "").strip() for p in products}
         tmpl_to_name = {p["id"]: p.get("name","") for p in products}
         tmpl_to_price = {p["id"]: float(p.get("list_price") or 0) for p in products}
-
-        quants = _odoo_call("stock.quant", "search_read",
-                            [[("product_id.product_tmpl_id", "in", prod_ids), ("location_id.usage", "=", "internal")]],
-                            {"fields": ["product_id","location_id","quantity","product_id.product_tmpl_id"], "limit": 50000})
-        tmpl_qty = {}
+        quants = _odoo_call(url, db, uid, ak, "stock.quant", "search_read", [[("product_id.product_tmpl_id", "in", prod_ids), ("location_id.usage", "=", "internal")]], {"fields": ["product_id","location_id","quantity","product_id.product_tmpl_id"], "limit": 50000})
+        tmpl_qty: dict = {}
         branch_rows = []
         for q in quants:
             tmpl_raw = q.get("product_id.product_tmpl_id")
@@ -756,44 +800,45 @@ def fetch_inventory(codes_tuple: tuple = (), exact: bool = False):
             loc_name = loc[1] if isinstance(loc, list) and len(loc) > 1 else str(loc or "")
             mc_val = tmpl_to_model.get(tmpl_id, "")
             if mc_val:
-                branch_rows.append({"Branch": loc_name, "Model Code": mc_val, "On Hand": qty})
-
+                branch_rows.append({"System": name, "Branch": loc_name, "Model Code": mc_val, "On Hand": qty})
         total_rows = []
         for tmpl_id in prod_ids:
             total_rows.append({
+                "System": name,
                 "Model Code": tmpl_to_model.get(tmpl_id, ""),
                 "Product": tmpl_to_name.get(tmpl_id, ""),
                 "Sale Price": tmpl_to_price.get(tmpl_id, 0),
                 "On Hand": tmpl_qty.get(tmpl_id, 0),
             })
-        total_df = pd.DataFrame(total_rows) if total_rows else pd.DataFrame(columns=["Model Code","Product","Sale Price","On Hand"])
-        branch_df = pd.DataFrame(branch_rows)[["Branch","Model Code","On Hand"]] if branch_rows else pd.DataFrame(columns=["Branch","Model Code","On Hand"])
-        total_df = coerce_numerics(total_df)
-        branch_df = coerce_numerics(branch_df)
-        return total_df, branch_df, f"Loaded {len(total_df)} products, {len(quants)} quant records."
+        return total_rows, branch_rows, {"system": name, "level": "ok", "msg": f"Loaded {len(total_rows)} products, {len(quants)} quant records."}
     except Exception as e:
-        return pd.DataFrame(), pd.DataFrame(), f"Error fetching inventory: {type(e).__name__}: {e}"
+        return [], [], {"system": name, "level": "error", "msg": f"{type(e).__name__}: {e}"}
+
+def fetch_inventory(selected_keys: list, codes_tuple: tuple = (), exact: bool = False):
+    all_total, all_branch, diag = [], [], []
+    with ThreadPoolExecutor(max_workers=4) as ex:
+        futs = {ex.submit(_fetch_inventory_one, k, codes_tuple, exact): k for k in selected_keys}
+        for f in as_completed(futs):
+            total_rows, branch_rows, d = f.result()
+            all_total += total_rows
+            all_branch += branch_rows
+            diag.append(d)
+    total_df = pd.DataFrame(all_total) if all_total else pd.DataFrame(columns=["System","Model Code","Product","Sale Price","On Hand"])
+    branch_df = pd.DataFrame(all_branch)[["System","Branch","Model Code","On Hand"]] if all_branch else pd.DataFrame(columns=["System","Branch","Model Code","On Hand"])
+    return coerce_numerics(total_df), coerce_numerics(branch_df), diag
 
 @st.cache_data(ttl=3600, show_spinner=False)
-def fetch_purchase_summary(model_codes_tuple: tuple, date_from: str, date_to: str):
-    """Fetch purchase quantities by model code for given date range."""
-    if not model_codes_tuple:
-        return pd.DataFrame(columns=["Model Code","Purchase Qty"])
+def _fetch_purchase_summary_one(key: str, model_codes_tuple: tuple, date_from: str, date_to: str) -> pd.DataFrame:
+    url, db, uid, ak, name, err = _get_system_conn(key)
+    if err:
+        return pd.DataFrame()
     try:
-        url, db, uid, api_key, err = _get_swag_connection()
-        if err:
-            return pd.DataFrame()
-        domain = [["order_id.date_approve", ">=", f"{date_from} 00:00:00"],
-                  ["order_id.date_approve", "<=", f"{date_to} 23:59:59"],
-                  ["order_id.state", "in", ["purchase","done"]],
-                  ["product_id.default_code", "in", list(model_codes_tuple)]]
-        lines = _odoo_call("purchase.order.line", "search_read", [domain],
-                           {"fields": ["product_id","product_qty"], "limit": 10000})
+        domain = [["order_id.date_approve", ">=", f"{date_from} 00:00:00"], ["order_id.date_approve", "<=", f"{date_to} 23:59:59"], ["order_id.state", "in", ["purchase","done"]], ["product_id.default_code", "in", list(model_codes_tuple)]]
+        lines = _odoo_call(url, db, uid, ak, "purchase.order.line", "search_read", [domain], {"fields": ["product_id","product_qty"], "limit": 10000})
         if not lines:
             return pd.DataFrame()
         prod_ids = list({l["product_id"][0] for l in lines if isinstance(l.get("product_id"), list)})
-        products = _odoo_call("product.product", "search_read", [[["id","in", prod_ids]]],
-                              {"fields": ["id","default_code"], "limit": len(prod_ids)+10})
+        products = _odoo_call(url, db, uid, ak, "product.product", "search_read", [[["id","in", prod_ids]]], {"fields": ["id","default_code"], "limit": len(prod_ids)+10})
         prod_map = {p["id"]: p.get("default_code","") for p in products}
         rows = []
         for line in lines:
@@ -807,35 +852,41 @@ def fetch_purchase_summary(model_codes_tuple: tuple, date_from: str, date_to: st
         df.columns = ["Model Code", "Purchase Qty"]
         return df
     except Exception:
+        return pd.DataFrame()
+
+def fetch_purchase_summary(selected_keys: list, model_codes_tuple: tuple, date_from: str, date_to: str) -> pd.DataFrame:
+    results = []
+    with ThreadPoolExecutor(max_workers=4) as ex:
+        futs = [ex.submit(_fetch_purchase_summary_one, k, model_codes_tuple, date_from, date_to) for k in selected_keys]
+        for f in as_completed(futs):
+            df = f.result()
+            if df is not None and not df.empty:
+                results.append(df)
+    if not results:
         return pd.DataFrame(columns=["Model Code","Purchase Qty"])
+    combined = pd.concat(results, ignore_index=True)
+    return combined.groupby("Model Code")["Purchase Qty"].sum().reset_index()
 
 @st.cache_data(ttl=1800, show_spinner=False)
-def fetch_purchase(model_filter: str, date_from: str, date_to: str):
-    """Fetch purchase details for SWAG."""
+def _fetch_purchase_one(key: str, model_filter: str, date_from: str, date_to: str) -> tuple:
+    _empty = pd.DataFrame(columns=["System","Date","PO","Vendor","Receipt Location","Category","Model Code","Product","Qty","Unit Price","Subtotal"])
+    url, db, uid, ak, name, err = _get_system_conn(key)
+    if err:
+        return _empty, {"system": name, "level": "error", "msg": err}
     try:
-        url, db, uid, api_key, err = _get_swag_connection()
-        if err:
-            return pd.DataFrame(), err
-        po_domain = [["date_approve", ">=", f"{date_from} 00:00:00"],
-                     ["date_approve", "<=", f"{date_to} 23:59:59"],
-                     ["state", "in", ["purchase","done"]]]
-        pos_list = _odoo_call("purchase.order", "search_read", [po_domain],
-                              {"fields": ["id","name","partner_id","date_approve","state"], "limit": 2000})
+        po_domain = [["date_approve", ">=", f"{date_from} 00:00:00"], ["date_approve", "<=", f"{date_to} 23:59:59"], ["state", "in", ["purchase","done"]]]
+        pos_list = _odoo_call(url, db, uid, ak, "purchase.order", "search_read", [po_domain], {"fields": ["id","name","partner_id","date_approve","state"], "limit": 2000})
         if not pos_list:
-            return pd.DataFrame(), "No purchase orders found."
+            return _empty, {"system": name, "level": "ok", "msg": "No purchase orders found."}
         po_ids = [p["id"] for p in pos_list]
         po_map = {p["id"]: p for p in pos_list}
-        lines = _odoo_call("purchase.order.line", "search_read", [[["order_id","in", po_ids]]],
-                           {"fields": ["order_id","product_id","product_qty","price_unit","price_subtotal"], "limit": 20000})
+        lines = _odoo_call(url, db, uid, ak, "purchase.order.line", "search_read", [[["order_id","in", po_ids]]], {"fields": ["order_id","product_id","product_qty","price_unit","price_subtotal"], "limit": 20000})
         if not lines:
-            return pd.DataFrame(), "No purchase lines found."
+            return _empty, {"system": name, "level": "ok", "msg": "No purchase lines found."}
         prod_ids = list({l["product_id"][0] for l in lines if isinstance(l.get("product_id"), list)})
-        products = _odoo_call("product.product", "search_read", [[["id","in", prod_ids]]],
-                              {"fields": ["id","default_code","name","categ_id"], "limit": len(prod_ids)+10})
+        products = _odoo_call(url, db, uid, ak, "product.product", "search_read", [[["id","in", prod_ids]]], {"fields": ["id","default_code","name","categ_id"], "limit": len(prod_ids)+10})
         prod_map = {p["id"]: p for p in products}
-        pickings = _odoo_call("stock.picking", "search_read",
-                              [[["origin","in", [p["name"] for p in pos_list]], ["picking_type_code","=","incoming"]]],
-                              {"fields": ["origin","location_dest_id"], "limit": 2000})
+        pickings = _odoo_call(url, db, uid, ak, "stock.picking", "search_read", [[["origin","in", [p["name"] for p in pos_list]], ["picking_type_code","=","incoming"]]], {"fields": ["origin","location_dest_id"], "limit": 2000})
         receipt_map = {}
         for pick in pickings:
             loc = pick.get("location_dest_id")
@@ -857,6 +908,7 @@ def fetch_purchase(model_filter: str, date_from: str, date_to: str):
             partner = po.get("partner_id")
             vendor = partner[1] if isinstance(partner, list) and len(partner) > 1 else ""
             rows.append({
+                "System": name,
                 "Date": str(po.get("date_approve",""))[:10],
                 "PO": po.get("name",""),
                 "Vendor": vendor,
@@ -869,37 +921,47 @@ def fetch_purchase(model_filter: str, date_from: str, date_to: str):
                 "Subtotal": float(line.get("price_subtotal") or 0),
             })
         if not rows:
-            return pd.DataFrame(), "Filters produced no purchase rows."
+            return _empty, {"system": name, "level": "ok", "msg": "Filters produced no rows."}
         df = pd.DataFrame(rows)
         df["Date"] = pd.to_datetime(df["Date"], errors="coerce")
         df = coerce_numerics(df)
-        return df.sort_values("Date", ascending=False).reset_index(drop=True), f"Loaded {len(df)} purchase lines."
+        return df.sort_values("Date", ascending=False).reset_index(drop=True), {"system": name, "level": "ok", "msg": f"Loaded {len(df)} purchase lines."}
     except Exception as e:
-        return pd.DataFrame(), f"Error fetching purchase: {type(e).__name__}: {e}"
+        return _empty, {"system": name, "level": "error", "msg": f"{type(e).__name__}: {e}"}
+
+def fetch_purchase(selected_keys: list, model_filter: str, date_from: str, date_to: str):
+    results, diag = [], []
+    with ThreadPoolExecutor(max_workers=4) as ex:
+        futs = {ex.submit(_fetch_purchase_one, k, model_filter, date_from, date_to): k for k in selected_keys}
+        for f in as_completed(futs):
+            df, d = f.result()
+            diag.append(d)
+            if df is not None and not df.empty:
+                results.append(df)
+    if not results:
+        return pd.DataFrame(), diag
+    combined = pd.concat(results, ignore_index=True)
+    combined["Date"] = pd.to_datetime(combined["Date"], errors="coerce")
+    return combined.sort_values("Date", ascending=False).reset_index(drop=True), diag
 
 @st.cache_data(ttl=1800, show_spinner=False)
-def fetch_pos(date_from: str, date_to: str, branch_filter: str, model_filter: str):
-    """Fetch POS data for SWAG."""
+def _fetch_pos_one(key: str, date_from: str, date_to: str, branch_filter: str, model_filter: str) -> tuple:
+    _empty = pd.DataFrame(columns=["System","Date","POS Order","Branch","Customer","Cashier","Model Code","Product","Qty","Unit Price","Subtotal","Total Amount"])
+    url, db, uid, ak, name, err = _get_system_conn(key)
+    if err:
+        return _empty, {"system": name, "level": "error", "msg": err}
     try:
-        url, db, uid, api_key, err = _get_swag_connection()
-        if err:
-            return pd.DataFrame(), err
-        order_domain = [["date_order", ">=", f"{date_from} 00:00:00"],
-                        ["date_order", "<=", f"{date_to} 23:59:59"],
-                        ["state", "in", ["paid","done","invoiced"]]]
-        orders = _odoo_call("pos.order", "search_read", [order_domain],
-                            {"fields": ["id","name","date_order","amount_total","user_id","session_id","partner_id","lines"], "limit": 5000})
+        order_domain = [["date_order", ">=", f"{date_from} 00:00:00"], ["date_order", "<=", f"{date_to} 23:59:59"], ["state", "in", ["paid","done","invoiced"]]]
+        orders = _odoo_call(url, db, uid, ak, "pos.order", "search_read", [order_domain], {"fields": ["id","name","date_order","amount_total","user_id","session_id","partner_id","lines"], "limit": 5000})
         if not orders:
-            return pd.DataFrame(), "No POS orders found."
+            return _empty, {"system": name, "level": "ok", "msg": "No POS orders found."}
         session_ids = list({o["session_id"][0] for o in orders if o.get("session_id")})
         branch_map = {}
         if session_ids:
-            sessions = _odoo_call("pos.session", "search_read", [[["id","in",session_ids]]],
-                                  {"fields": ["id","config_id"], "limit": len(session_ids)+10})
+            sessions = _odoo_call(url, db, uid, ak, "pos.session", "search_read", [[["id","in",session_ids]]], {"fields": ["id","config_id"], "limit": len(session_ids)+10})
             config_ids = list({s["config_id"][0] for s in sessions if s.get("config_id")})
             if config_ids:
-                configs = _odoo_call("pos.config", "search_read", [[["id","in",config_ids]]],
-                                     {"fields": ["id","name"], "limit": len(config_ids)+10})
+                configs = _odoo_call(url, db, uid, ak, "pos.config", "search_read", [[["id","in",config_ids]]], {"fields": ["id","name"], "limit": len(config_ids)+10})
                 config_name = {c["id"]: c["name"] for c in configs}
                 for s in sessions:
                     cid = s["config_id"][0] if isinstance(s.get("config_id"), list) else s.get("config_id")
@@ -909,15 +971,13 @@ def fetch_pos(date_from: str, date_to: str, branch_filter: str, model_filter: st
             if o.get("lines"):
                 line_ids.extend(o["lines"])
         if not line_ids:
-            return pd.DataFrame(), "No POS line IDs found."
-        lines = _odoo_call("pos.order.line", "search_read", [[["id","in", line_ids]]],
-                           {"fields": ["order_id","product_id","qty","price_unit","price_subtotal"], "limit": 20000})
+            return _empty, {"system": name, "level": "ok", "msg": "No POS line IDs found."}
+        lines = _odoo_call(url, db, uid, ak, "pos.order.line", "search_read", [[["id","in", line_ids]]], {"fields": ["order_id","product_id","qty","price_unit","price_subtotal"], "limit": 20000})
         if not lines:
-            return pd.DataFrame(), "No POS lines returned."
+            return _empty, {"system": name, "level": "ok", "msg": "No POS lines returned."}
         order_map = {o["id"]: o for o in orders}
         prod_ids = list({l["product_id"][0] for l in lines if isinstance(l.get("product_id"), list)})
-        products = _odoo_call("product.product", "search_read", [[["id","in", prod_ids]]],
-                              {"fields": ["id","default_code","name","categ_id"], "limit": len(prod_ids)+20}) if prod_ids else []
+        products = _odoo_call(url, db, uid, ak, "product.product", "search_read", [[["id","in", prod_ids]]], {"fields": ["id","default_code","name","categ_id"], "limit": len(prod_ids)+20}) if prod_ids else []
         prod_map = {p["id"]: p for p in products}
         rows = []
         for line in lines:
@@ -940,6 +1000,7 @@ def fetch_pos(date_from: str, date_to: str, branch_filter: str, model_filter: st
             user = order.get("user_id")
             cashier = user[1] if isinstance(user, list) and len(user) > 1 else ""
             rows.append({
+                "System": name,
                 "Date": str(order.get("date_order",""))[:10],
                 "POS Order": order.get("name",""),
                 "Branch": branch_name,
@@ -953,42 +1014,52 @@ def fetch_pos(date_from: str, date_to: str, branch_filter: str, model_filter: st
                 "Total Amount": float(order.get("amount_total") or 0),
             })
         if not rows:
-            return pd.DataFrame(), "Filters produced no POS rows."
+            return _empty, {"system": name, "level": "ok", "msg": "Filters produced no POS rows."}
         df = pd.DataFrame(rows)
         df["Date"] = pd.to_datetime(df["Date"], errors="coerce")
         df = coerce_numerics(df)
-        return df.sort_values("Date", ascending=False).reset_index(drop=True), f"Loaded {len(df)} POS lines."
+        return df.sort_values("Date", ascending=False).reset_index(drop=True), {"system": name, "level": "ok", "msg": f"Loaded {len(df)} POS lines."}
     except Exception as e:
-        return pd.DataFrame(), f"Error fetching POS: {type(e).__name__}: {e}"
+        return _empty, {"system": name, "level": "error", "msg": f"{type(e).__name__}: {e}"}
+
+def fetch_pos(selected_keys: list, date_from: str, date_to: str, branch_filter: str, model_filter: str):
+    results, diag = [], []
+    with ThreadPoolExecutor(max_workers=4) as ex:
+        futs = {ex.submit(_fetch_pos_one, k, date_from, date_to, branch_filter, model_filter): k for k in selected_keys}
+        for f in as_completed(futs):
+            df, d = f.result()
+            diag.append(d)
+            if df is not None and not df.empty:
+                results.append(df)
+    if not results:
+        return pd.DataFrame(), diag
+    combined = pd.concat(results, ignore_index=True)
+    combined["Date"] = pd.to_datetime(combined["Date"], errors="coerce")
+    return combined.sort_values("Date", ascending=False).reset_index(drop=True), diag
 
 @st.cache_data(ttl=1800, show_spinner=False)
-def fetch_sales(date_from: str, date_to: str, model_filter: str):
-    """Fetch sales data for SWAG."""
+def _fetch_sales_one(key: str, date_from: str, date_to: str, model_filter: str) -> tuple:
+    _empty = pd.DataFrame(columns=["System","Date","SO","Customer","Model Code","Product","Qty","Unit Price","Subtotal","Total Amount","State"])
+    url, db, uid, ak, name, err = _get_system_conn(key)
+    if err:
+        return _empty, {"system": name, "level": "error", "msg": err}
     try:
-        url, db, uid, api_key, err = _get_swag_connection()
-        if err:
-            return pd.DataFrame(), err
-        so_domain = [["date_order", ">=", f"{date_from} 00:00:00"],
-                     ["date_order", "<=", f"{date_to} 23:59:59"],
-                     ["state", "in", ["sale","done"]]]
-        orders = _odoo_call("sale.order", "search_read", [so_domain],
-                            {"fields": ["id","name","date_order","amount_total","partner_id","state","order_line"], "limit": 5000})
+        so_domain = [["date_order", ">=", f"{date_from} 00:00:00"], ["date_order", "<=", f"{date_to} 23:59:59"], ["state", "in", ["sale","done"]]]
+        orders = _odoo_call(url, db, uid, ak, "sale.order", "search_read", [so_domain], {"fields": ["id","name","date_order","amount_total","partner_id","state","order_line"], "limit": 5000})
         if not orders:
-            return pd.DataFrame(), "No sales orders found."
+            return _empty, {"system": name, "level": "ok", "msg": "No sales orders found."}
         order_map = {o["id"]: o for o in orders}
         line_ids = []
         for o in orders:
             if o.get("order_line"):
                 line_ids.extend(o["order_line"])
         if not line_ids:
-            return pd.DataFrame(), "No sales lines found."
-        lines = _odoo_call("sale.order.line", "search_read", [[["id","in", line_ids]]],
-                           {"fields": ["order_id","product_id","product_uom_qty","price_unit","price_subtotal"], "limit": 20000})
+            return _empty, {"system": name, "level": "ok", "msg": "No sales lines found."}
+        lines = _odoo_call(url, db, uid, ak, "sale.order.line", "search_read", [[["id","in", line_ids]]], {"fields": ["order_id","product_id","product_uom_qty","price_unit","price_subtotal"], "limit": 20000})
         if not lines:
-            return pd.DataFrame(), "No sale.order.line data."
+            return _empty, {"system": name, "level": "ok", "msg": "No sale.order.line data."}
         prod_ids = list({l["product_id"][0] for l in lines if isinstance(l.get("product_id"), list)})
-        products = _odoo_call("product.product", "search_read", [[["id","in", prod_ids]]],
-                              {"fields": ["id","default_code","name","categ_id"], "limit": len(prod_ids)+20}) if prod_ids else []
+        products = _odoo_call(url, db, uid, ak, "product.product", "search_read", [[["id","in", prod_ids]]], {"fields": ["id","default_code","name","categ_id"], "limit": len(prod_ids)+20}) if prod_ids else []
         prod_map = {p["id"]: p for p in products}
         rows = []
         for line in lines:
@@ -1006,6 +1077,7 @@ def fetch_sales(date_from: str, date_to: str, model_filter: str):
             partner = order.get("partner_id")
             customer = partner[1] if isinstance(partner, list) and len(partner) > 1 else ""
             rows.append({
+                "System": name,
                 "Date": str(order.get("date_order",""))[:10],
                 "SO": order.get("name",""),
                 "Customer": customer,
@@ -1018,17 +1090,32 @@ def fetch_sales(date_from: str, date_to: str, model_filter: str):
                 "State": order.get("state",""),
             })
         if not rows:
-            return pd.DataFrame(), "Filters produced no sales rows."
+            return _empty, {"system": name, "level": "ok", "msg": "Filters produced no sales rows."}
         df = pd.DataFrame(rows)
         df["Date"] = pd.to_datetime(df["Date"], errors="coerce")
         df = coerce_numerics(df)
-        return df.sort_values("Date", ascending=False).reset_index(drop=True), f"Loaded {len(df)} sales lines."
+        return df.sort_values("Date", ascending=False).reset_index(drop=True), {"system": name, "level": "ok", "msg": f"Loaded {len(df)} sales lines."}
     except Exception as e:
-        return pd.DataFrame(), f"Error fetching sales: {type(e).__name__}: {e}"
+        return _empty, {"system": name, "level": "error", "msg": f"{type(e).__name__}: {e}"}
 
-# -----------------------------------------------------------------------------
-# 12. AI INSIGHTS
-# -----------------------------------------------------------------------------
+def fetch_sales(selected_keys: list, date_from: str, date_to: str, model_filter: str):
+    results, diag = [], []
+    with ThreadPoolExecutor(max_workers=4) as ex:
+        futs = {ex.submit(_fetch_sales_one, k, date_from, date_to, model_filter): k for k in selected_keys}
+        for f in as_completed(futs):
+            df, d = f.result()
+            diag.append(d)
+            if df is not None and not df.empty:
+                results.append(df)
+    if not results:
+        return pd.DataFrame(), diag
+    combined = pd.concat(results, ignore_index=True)
+    combined["Date"] = pd.to_datetime(combined["Date"], errors="coerce")
+    return combined.sort_values("Date", ascending=False).reset_index(drop=True), diag
+
+# ─────────────────────────────────────────────────────────────────────────────
+# SECTION 12: AI INSIGHTS
+# ─────────────────────────────────────────────────────────────────────────────
 def _insight_block(rows_data: list) -> str:
     inner = "".join(f"<div class='chat-insight-row'><span class='chat-insight-key'>{k}</span><span class='chat-insight-val'>{v}</span></div>" for k, v in rows_data)
     return f"<div class='chat-insight-block'>{inner}</div>"
@@ -1182,17 +1269,17 @@ def show_chat_panel():
             st.session_state.chat_history = []
             st.rerun()
 
-# -----------------------------------------------------------------------------
-# 13. LOGIN PAGE
-# -----------------------------------------------------------------------------
+# ─────────────────────────────────────────────────────────────────────────────
+# SECTION 13: LOGIN PAGE
+# ─────────────────────────────────────────────────────────────────────────────
 def show_login():
     st.markdown(build_css(), unsafe_allow_html=True)
     _, col2, _ = st.columns([1, 1.1, 1])
     with col2:
         st.markdown("<div class='login-card'>", unsafe_allow_html=True)
         st.markdown("<div class='login-orb'>💎</div>", unsafe_allow_html=True)
-        st.markdown("<div class='login-title'>SWAG Executive Operations</div>", unsafe_allow_html=True)
-        st.markdown("<div class='login-subtitle'>Board‑Level Dashboard</div>", unsafe_allow_html=True)
+        st.markdown("<div class='login-title'>Executive Operations</div>", unsafe_allow_html=True)
+        st.markdown("<div class='login-subtitle'>Multi-Company Analytics · Board-Level Dashboard</div>", unsafe_allow_html=True)
         if st.session_state.get("login_error"):
             st.markdown(f"<div class='alert-banner'>❌ {st.session_state.login_error}</div>", unsafe_allow_html=True)
         with st.form("login_form"):
@@ -1217,14 +1304,14 @@ def show_login():
                     st.rerun()
         st.markdown("</div>", unsafe_allow_html=True)
 
-# -----------------------------------------------------------------------------
-# 14. DASHBOARD (SWAG-ONLY)
-# -----------------------------------------------------------------------------
+# ─────────────────────────────────────────────────────────────────────────────
+# SECTION 14: DASHBOARD
+# ─────────────────────────────────────────────────────────────────────────────
 def show_dashboard():
     st.markdown(build_css(), unsafe_allow_html=True)
 
     with st.sidebar:
-        st.markdown(f"<div style='background:{th('card_bg')};border:1px solid {th('border')};border-radius:14px;padding:14px;margin-bottom:16px;text-align:center;'><div style='font-size:1.8rem;'>💎</div><div style='font-size:0.88rem;font-weight:700;color:{th('text')};'>SWAG DASHBOARD</div><div style='font-size:0.7rem;color:{th('text_muted')};'>{st.session_state.user_email}</div></div>", unsafe_allow_html=True)
+        st.markdown(f"<div style='background:{th('card_bg')};border:1px solid {th('border')};border-radius:14px;padding:14px;margin-bottom:16px;text-align:center;'><div style='font-size:1.8rem;'>💎</div><div style='font-size:0.88rem;font-weight:700;color:{th('text')};'>SWAG DASHBARD</div><div style='font-size:0.7rem;color:{th('text_muted')};'>{st.session_state.user_email}</div></div>", unsafe_allow_html=True)
         new_theme = st.selectbox(f"🎨 {t('Theme','المظهر')}", list(THEMES.keys()), index=list(THEMES.keys()).index(get_theme()), key="theme_select")
         if new_theme != get_theme():
             st.session_state.theme = new_theme
@@ -1232,18 +1319,22 @@ def show_dashboard():
         st.divider()
         new_lang = st.radio(f"🌐 {t('Language','اللغة')}", ["EN","AR"], index=0 if get_lang() == "EN" else 1, horizontal=True)
         if new_lang != get_lang():
-            for k in ["inventory_df","inventory_branch_df","pos_df","sales_df","purchase_df","diag_msg"]:
-                st.session_state[k] = None if "df" in k else ""
+            for k in ["inventory_df","inventory_branch_df","pos_df","sales_df","purchase_df","inv_diag","pos_diag","sales_diag","pur_diag"]:
+                st.session_state[k] = None if "df" in k else []
             st.session_state.lang = new_lang
-            st.cache_data.clear()
+            _fetch_inventory_one.clear()
+            _fetch_purchase_one.clear()
+            _fetch_pos_one.clear()
+            _fetch_sales_one.clear()
             st.rerun()
         st.divider()
-        st.markdown(f"**🏢 {t('Connected System','النظام المتصل')}**")
-        cfg = st.secrets.get("SWAG", {})
-        if cfg.get("url"):
-            st.markdown(f"<span class='badge-ok'>✓ SWAG</span>", unsafe_allow_html=True)
-        else:
-            st.markdown(f"<span class='badge-off'>✗ SWAG (not configured)</span>", unsafe_allow_html=True)
+        st.markdown(f"**🏢 {t('Connected Systems','الأنظمة المتصلة')}**")
+        for key in SYSTEM_KEYS:
+            cfg = st.secrets.get(key, {})
+            name = get_system_name(key)
+            badge = "badge-ok" if cfg.get("url") else "badge-off"
+            icon = "✓" if cfg.get("url") else "✗"
+            st.markdown(f"<div style='margin:4px 0;'><span class='{badge}'>{icon} {name}</span></div>", unsafe_allow_html=True)
         st.divider()
         st.markdown(f"**📊 {t('Loaded Data','البيانات المحملة')}**")
         for icon, name, df_key, ts_key in [("📦", t("Inventory","المخزون"), "inventory_df", "inv_last_refresh"), ("🛒", t("POS","نقاط البيع"), "pos_df", "pos_last_refresh"), ("🛍️", t("Sales","المبيعات"), "sales_df", "sales_last_refresh"), ("🔖", t("Purchase","المشتريات"), "purchase_df", "pur_last_refresh")]:
@@ -1258,7 +1349,7 @@ def show_dashboard():
         if st.button(f"🚪 {t('Logout','تسجيل الخروج')}", use_container_width=True):
             do_logout()
 
-    st.markdown(f"<div class='dash-header'><div class='dash-title'>SWAG Executive Dashboard</div><div class='dash-subtitle'>{t('Inventory · POS · Sales · Purchase · AI Insights','المخزون · نقاط البيع · المبيعات · المشتريات · تحليلات ذكية')}</div></div>", unsafe_allow_html=True)
+    st.markdown(f"<div class='dash-header'><div class='dash-title'>SWAG — SWAG DASBAORD</div><div class='dash-subtitle'>{t('Multi-Company · Inventory · POS · Sales · Purchase · AI Insights','متعدد الشركات · المخزون · نقاط البيع · المبيعات · المشتريات · تحليلات ذكية')}</div></div>", unsafe_allow_html=True)
     st.divider()
 
     tab_inv, tab_pos, tab_sales, tab_pur, tab_chat = st.tabs([
@@ -1274,26 +1365,32 @@ def show_dashboard():
         st.markdown(f"<div class='section-header'>📦 {t('Inventory Overview','نظرة عامة على المخزون')}</div>", unsafe_allow_html=True)
         ic1, ic2, ic3 = st.columns([2, 1.5, 1])
         with ic1:
-            low_thresh = st.number_input(t("Low stock threshold","حد المنخفض"), min_value=0, max_value=1000, value=5, step=1, key="inv_low_thresh")
+            co_opts = [t("All Companies","جميع الشركات")] + [get_system_name(k) for k in SYSTEM_KEYS]
+            inv_co = st.selectbox(t("Company","الشركة"), co_opts, key="inv_company")
+            inv_keys = SYSTEM_KEYS if inv_co == t("All Companies","جميع الشركات") else [k for k in SYSTEM_KEYS if get_system_name(k) == inv_co]
         with ic2:
-            exact_match = st.toggle(t("Exact match","تطابق تام"), value=False, key="inv_exact")
+            low_thresh = st.number_input(t("Low stock threshold","حد المنخفض"), min_value=0, max_value=1000, value=5, step=1, key="inv_low_thresh")
         with ic3:
+            exact_match = st.toggle(t("Exact match","تطابق تام"), value=False, key="inv_exact")
+        ifc1, ifc2 = st.columns([3, 1])
+        with ifc1:
+            model_filter = st.text_input(t("Model Code filter","فلتر رمز الموديل"), key="inv_model_filter").strip()
+        with ifc2:
             if st.button(t("Reset","إعادة تعيين"), key="inv_reset"):
                 for k in ["inv_model_filter","inv_exact","inv_low_thresh"]:
                     st.session_state.pop(k, None)
                 st.rerun()
-        model_filter = st.text_input(t("Model Code filter","فلتر رمز الموديل"), key="inv_model_filter").strip()
         inv_viz_mode = viz_mode_selector("inv_viz_mode")
         if st.button(f"🔄 {t('Refresh Inventory','تحديث المخزون')}", type="primary", key="inv_refresh"):
             with st.spinner(t("Fetching inventory...","جاري جلب المخزون...")):
                 codes = tuple([model_filter]) if model_filter else ()
-                total_df, branch_df, diag = fetch_inventory(codes, exact_match)
+                total_df, branch_df, diag = fetch_inventory(inv_keys, codes, exact_match)
                 if total_df is not None and not total_df.empty and "Model Code" in total_df.columns:
                     mc_vals = total_df["Model Code"].dropna().unique().tolist()
                     if mc_vals:
                         end_d = datetime.now().date()
                         start_d = end_d - timedelta(days=365)
-                        pur_sum = fetch_purchase_summary(tuple(mc_vals), start_d.strftime("%Y-%m-%d"), end_d.strftime("%Y-%m-%d"))
+                        pur_sum = fetch_purchase_summary(inv_keys, tuple(mc_vals), start_d.strftime("%Y-%m-%d"), end_d.strftime("%Y-%m-%d"))
                         if pur_sum is not None and not pur_sum.empty:
                             total_df = total_df.merge(pur_sum, on="Model Code", how="left")
                             total_df["Purchase Qty"] = total_df["Purchase Qty"].fillna(0).astype(int)
@@ -1301,13 +1398,13 @@ def show_dashboard():
                             total_df["Purchase Qty"] = 0
                     else:
                         total_df["Purchase Qty"] = 0
-                st.session_state.inventory_df = total_df
-                st.session_state.inventory_branch_df = branch_df
-                st.session_state.diag_msg = diag
+                st.session_state.inventory_df = coerce_numerics(total_df)
+                st.session_state.inventory_branch_df = coerce_numerics(branch_df)
+                st.session_state.inv_diag = diag
                 st.session_state.inv_page = 0
                 st.session_state.inv_full_page = 0
                 st.session_state.inv_last_refresh = datetime.now()
-        show_diag(st.session_state.get("diag_msg", ""))
+        show_diag(st.session_state.get("inv_diag", []))
         total_df = st.session_state.get("inventory_df")
         branch_df = st.session_state.get("inventory_branch_df")
         if total_df is None or total_df.empty:
@@ -1368,12 +1465,11 @@ def show_dashboard():
         st.markdown(f"<div class='section-header'>🛒 {t('POS Analytics','تحليلات نقاط البيع')}</div>", unsafe_allow_html=True)
         pc1, pc2 = st.columns([2, 2])
         with pc1:
-            pos_viz_mode = viz_mode_selector("pos_viz_mode")
+            pos_co_opts = [t("All Companies","جميع الشركات")] + [get_system_name(k) for k in SYSTEM_KEYS]
+            pos_co = st.selectbox(t("Company","الشركة"), pos_co_opts, key="pos_company")
+            pos_keys = SYSTEM_KEYS if pos_co == t("All Companies","جميع الشركات") else [k for k in SYSTEM_KEYS if get_system_name(k) == pos_co]
         with pc2:
-            if st.button(t("Reset Filters","إعادة تعيين"), key="pos_reset"):
-                for k in ["pos_branch_filter","pos_model_filter"]:
-                    st.session_state.pop(k, None)
-                st.rerun()
+            pos_viz_mode = viz_mode_selector("pos_viz_mode")
         pd1, pd2 = st.columns(2)
         with pd1:
             pos_from = st.date_input(t("From","من"), value=datetime.now().date()-timedelta(days=30), key="pos_date_from")
@@ -1384,16 +1480,20 @@ def show_dashboard():
             pos_branch = st.text_input(t("Branch filter","فلتر الفرع"), key="pos_branch_filter").strip()
         with pf2:
             pos_model = st.text_input(t("Model Code","رمز الموديل"), key="pos_model_filter").strip()
+        if st.button(t("Reset Filters","إعادة تعيين"), key="pos_reset"):
+            for k in ["pos_branch_filter","pos_model_filter"]:
+                st.session_state.pop(k, None)
+            st.rerun()
         if st.button(f"🔄 {t('Refresh POS','تحديث POS')}", type="primary", key="pos_refresh"):
             with st.spinner(t("Fetching POS data...","جاري جلب بيانات POS...")):
-                df, diag = fetch_pos(pos_from.strftime("%Y-%m-%d"), pos_to.strftime("%Y-%m-%d"), pos_branch, pos_model)
-                st.session_state.pos_df = df
-                st.session_state.diag_msg = diag
+                df, diag = fetch_pos(pos_keys, pos_from.strftime("%Y-%m-%d"), pos_to.strftime("%Y-%m-%d"), pos_branch, pos_model)
+                st.session_state.pos_df = coerce_numerics(df) if df is not None else None
+                st.session_state.pos_diag = diag
                 st.session_state.pos_page = 0
                 st.session_state.pos_branch_page = 0
                 st.session_state.pos_cashier_page = 0
                 st.session_state.pos_last_refresh = datetime.now()
-        show_diag(st.session_state.get("diag_msg", ""))
+        show_diag(st.session_state.get("pos_diag", []))
         pos_df = st.session_state.get("pos_df")
         if pos_df is None or pos_df.empty:
             st.markdown(f"<div class='info-banner'>ℹ️ {t('Click Refresh POS to load data.','اضغط تحديث POS لتحميل البيانات.')}</div>", unsafe_allow_html=True)
@@ -1462,26 +1562,29 @@ def show_dashboard():
         st.markdown(f"<div class='section-header'>🛍️ {t('Sales Analytics','تحليلات المبيعات')}</div>", unsafe_allow_html=True)
         sc1, sc2 = st.columns([2, 2])
         with sc1:
-            sales_viz_mode = viz_mode_selector("sales_viz_mode")
+            s_co_opts = [t("All Companies","جميع الشركات")] + [get_system_name(k) for k in SYSTEM_KEYS]
+            s_co = st.selectbox(t("Company","الشركة"), s_co_opts, key="sales_company")
+            s_keys = SYSTEM_KEYS if s_co == t("All Companies","جميع الشركات") else [k for k in SYSTEM_KEYS if get_system_name(k) == s_co]
         with sc2:
-            if st.button(t("Reset Filters","إعادة تعيين"), key="sales_reset"):
-                st.session_state.pop("sales_model_filter", None)
-                st.rerun()
+            sales_viz_mode = viz_mode_selector("sales_viz_mode")
         sd1, sd2 = st.columns(2)
         with sd1:
             s_from = st.date_input(t("From","من"), value=datetime.now().date()-timedelta(days=30), key="sales_date_from")
         with sd2:
             s_to = st.date_input(t("To","إلى"), value=datetime.now().date(), key="sales_date_to")
         s_model = st.text_input(t("Model Code filter","فلتر رمز الموديل"), key="sales_model_filter").strip()
+        if st.button(t("Reset Filters","إعادة تعيين"), key="sales_reset"):
+            st.session_state.pop("sales_model_filter", None)
+            st.rerun()
         if st.button(f"🔄 {t('Refresh Sales','تحديث المبيعات')}", type="primary", key="sales_refresh"):
             with st.spinner(t("Fetching sales data...","جاري جلب بيانات المبيعات...")):
-                df, diag = fetch_sales(s_from.strftime("%Y-%m-%d"), s_to.strftime("%Y-%m-%d"), s_model)
-                st.session_state.sales_df = df
-                st.session_state.diag_msg = diag
+                df, diag = fetch_sales(s_keys, s_from.strftime("%Y-%m-%d"), s_to.strftime("%Y-%m-%d"), s_model)
+                st.session_state.sales_df = coerce_numerics(df) if df is not None else None
+                st.session_state.sales_diag = diag
                 st.session_state.sales_page = 0
                 st.session_state.sales_cust_page = 0
                 st.session_state.sales_last_refresh = datetime.now()
-        show_diag(st.session_state.get("diag_msg", ""))
+        show_diag(st.session_state.get("sales_diag", []))
         sales_df = st.session_state.get("sales_df")
         if sales_df is None or sales_df.empty:
             st.markdown(f"<div class='info-banner'>ℹ️ {t('Click Refresh Sales to load data.','اضغط تحديث المبيعات لتحميل البيانات.')}</div>", unsafe_allow_html=True)
@@ -1539,26 +1642,29 @@ def show_dashboard():
         st.markdown(f"<div class='section-header'>🔖 {t('Purchase Analytics','تحليلات المشتريات')}</div>", unsafe_allow_html=True)
         pur_c1, pur_c2 = st.columns([2, 2])
         with pur_c1:
-            pur_viz_mode = viz_mode_selector("pur_viz_mode")
+            p_co_opts = [t("All Companies","جميع الشركات")] + [get_system_name(k) for k in SYSTEM_KEYS]
+            p_co = st.selectbox(t("Company","الشركة"), p_co_opts, key="pur_company")
+            p_keys = SYSTEM_KEYS if p_co == t("All Companies","جميع الشركات") else [k for k in SYSTEM_KEYS if get_system_name(k) == p_co]
         with pur_c2:
-            if st.button(t("Reset Filters","إعادة تعيين"), key="pur_reset"):
-                st.session_state.pop("pur_model_filter", None)
-                st.rerun()
+            pur_viz_mode = viz_mode_selector("pur_viz_mode")
         prd1, prd2 = st.columns(2)
         with prd1:
             p_from = st.date_input(t("From","من"), value=datetime.now().date()-timedelta(days=90), key="pur_date_from")
         with prd2:
             p_to = st.date_input(t("To","إلى"), value=datetime.now().date(), key="pur_date_to")
         p_model = st.text_input(t("Model Code filter","فلتر رمز الموديل"), key="pur_model_filter").strip()
+        if st.button(t("Reset Filters","إعادة تعيين"), key="pur_reset"):
+            st.session_state.pop("pur_model_filter", None)
+            st.rerun()
         if st.button(f"🔄 {t('Refresh Purchase','تحديث المشتريات')}", type="primary", key="pur_refresh"):
             with st.spinner(t("Fetching purchase data...","جاري جلب بيانات المشتريات...")):
-                df, diag = fetch_purchase(p_model, p_from.strftime("%Y-%m-%d"), p_to.strftime("%Y-%m-%d"))
-                st.session_state.purchase_df = df
-                st.session_state.diag_msg = diag
+                df, diag = fetch_purchase(p_keys, p_model, p_from.strftime("%Y-%m-%d"), p_to.strftime("%Y-%m-%d"))
+                st.session_state.purchase_df = coerce_numerics(df) if df is not None else None
+                st.session_state.pur_diag = diag
                 st.session_state.pur_page = 0
                 st.session_state.pur_vendor_page = 0
                 st.session_state.pur_last_refresh = datetime.now()
-        show_diag(st.session_state.get("diag_msg", ""))
+        show_diag(st.session_state.get("pur_diag", []))
         pur_df = st.session_state.get("purchase_df")
         if pur_df is None or pur_df.empty:
             st.markdown(f"<div class='info-banner'>ℹ️ {t('Click Refresh Purchase to load data.','اضغط تحديث المشتريات لتحميل البيانات.')}</div>", unsafe_allow_html=True)
@@ -1567,6 +1673,7 @@ def show_dashboard():
             sub_col = "Subtotal"
             ven_col = "Vendor"
             mc_col = "Model Code"
+            dt_col = "Date"
             loc_col = "Receipt Location"
             po_col = "PO"
             total_val = float(safe_get_col(pur_df, sub_col).sum())
@@ -1620,9 +1727,9 @@ def show_dashboard():
     with tab_chat:
         show_chat_panel()
 
-# -----------------------------------------------------------------------------
+# ─────────────────────────────────────────────────────────────────────────────
 # ENTRY POINT
-# -----------------------------------------------------------------------------
+# ─────────────────────────────────────────────────────────────────────────────
 restore_session()
 if not st.session_state.get("authenticated"):
     show_login()
