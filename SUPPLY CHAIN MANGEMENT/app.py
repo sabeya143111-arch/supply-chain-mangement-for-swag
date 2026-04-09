@@ -1279,7 +1279,7 @@ def show_login():
         st.markdown("<div class='login-card'>", unsafe_allow_html=True)
         st.markdown("<div class='login-orb'>💎</div>", unsafe_allow_html=True)
         st.markdown("<div class='login-title'>Executive Operations</div>", unsafe_allow_html=True)
-        st.markdown("<div class='login-subtitle'>Multi-Company Analytics · Board-Level Dashboard</div>", unsafe_allow_html=True)
+        st.markdown("<div class='login-subtitle'>SWAG Analytics · Board-Level Dashboard</div>", unsafe_allow_html=True)
         if st.session_state.get("login_error"):
             st.markdown(f"<div class='alert-banner'>❌ {st.session_state.login_error}</div>", unsafe_allow_html=True)
         with st.form("login_form"):
@@ -1349,7 +1349,7 @@ def show_dashboard():
         if st.button(f"🚪 {t('Logout','تسجيل الخروج')}", use_container_width=True):
             do_logout()
 
-    st.markdown(f"<div class='dash-header'><div class='dash-title'>SWAG — SWAG DASBAORD</div><div class='dash-subtitle'>{t('Multi-Company · Inventory · POS · Sales · Purchase · AI Insights','متعدد الشركات · المخزون · نقاط البيع · المبيعات · المشتريات · تحليلات ذكية')}</div></div>", unsafe_allow_html=True)
+    st.markdown(f"<div class='dash-header'><div class='dash-title'>SWAG — SWAG DASBAORD</div><div class='dash-subtitle'>{t('SWAG · Inventory · POS · Sales · Purchase · AI Insights','متعدد الشركات · المخزون · نقاط البيع · المبيعات · المشتريات · تحليلات ذكية')}</div></div>", unsafe_allow_html=True)
     st.divider()
 
     tab_inv, tab_pos, tab_sales, tab_pur, tab_chat = st.tabs([
