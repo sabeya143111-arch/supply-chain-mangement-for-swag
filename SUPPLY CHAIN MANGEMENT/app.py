@@ -14,8 +14,8 @@ import streamlit as st
 
 st.set_page_config(
     page_title="SWAG Executive Dashboard",
-    page_icon="💎",
-    layout="wide",
+    page_icon="",
+    layout="COL",
     initial_sidebar_state="expanded",
 )
 
