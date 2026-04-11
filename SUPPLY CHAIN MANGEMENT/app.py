@@ -15,7 +15,7 @@ import plotly.graph_objects as go
 import streamlit as st
 
 st.set_page_config(
-    page_title="SWAG Executive Dashboard",
+    page_title="SWAG  Dashboard",
     page_icon="",
     layout="wide",
     initial_sidebar_state="expanded",
