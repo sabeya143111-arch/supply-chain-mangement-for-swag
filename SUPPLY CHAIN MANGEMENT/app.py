@@ -816,7 +816,7 @@ def render_paginated_table(df: pd.DataFrame, page_key: str, rows_per_page: int =
         cells = "".join(f"<td>{v}</td>" for v in row.values)
         rows_html += f"<tr>{cells}</tr>"
     st.markdown(
-        f"<div class='dataframe-wrap'><table><thead><tr>{header_html}<tr></thead><tbody>{rows_html}</tbody></table></div>",
+        f"<div class='dataframe-wrap'></table><thead><tr>{header_html}</table></thead><tbody>{rows_html}</tbody></table></div>",
         unsafe_allow_html=True,
     )
     st.markdown(
@@ -2054,28 +2054,18 @@ def show_dashboard():
                         use_container_width=True,
                     )
 
-    # ── POS TAB (unchanged) ──────────────────────────────────────────────────
+    # ── POS TAB (fixed order) ──────────────────────────────────────────────────
     with tab_pos:
         st.markdown(f"<div class='section-header'>🛒 {t('POS Analytics','تحليلات نقاط البيع')}</div>", unsafe_allow_html=True)
-        # Filters
-        fc1, fc2, fc3 = st.columns([2, 2, 1])
-        with fc1:
+        # Company selector and visualization mode
+        col1, col2 = st.columns([2, 2])
+        with col1:
             pos_co_opts = [t("All Companies", "جميع الشركات")] + [get_system_name(k) for k in SYSTEM_KEYS]
             pos_co = st.selectbox(t("Company", "الشركة"), pos_co_opts, key="pos_company", label_visibility="collapsed")
             pos_keys = SYSTEM_KEYS if pos_co == t("All Companies", "جميع الشركات") else [k for k in SYSTEM_KEYS if get_system_name(k) == pos_co]
-        with fc2:
+        with col2:
             pos_viz_mode = viz_mode_selector("pos_viz_mode")
-        with fc3:
-            if st.button(f"🔄 {t('Refresh','تحديث')}", type="primary", key="pos_refresh", use_container_width=True):
-                with st.spinner(t("Fetching...", "جاري الجلب...")):
-                    df, diag = fetch_pos(pos_keys, pos_from.strftime("%Y-%m-%d"), pos_to.strftime("%Y-%m-%d"), pos_branch, pos_model)
-                    st.session_state.pos_df = coerce_numerics(df) if df is not None else None
-                    st.session_state.pos_diag = diag
-                    st.session_state.pos_page = 0
-                    st.session_state.pos_branch_page = 0
-                    st.session_state.pos_cashier_page = 0
-                    st.session_state.pos_last_refresh = datetime.now()
-                    st.rerun()
+        # Date inputs and filters (must be defined before refresh button)
         fd1, fd2 = st.columns(2)
         with fd1:
             pos_from = st.date_input(t("From", "من"), value=datetime.now().date() - timedelta(days=30), key="pos_date_from")
@@ -2086,6 +2076,17 @@ def show_dashboard():
             pos_branch = st.text_input(t("Branch filter", "فلتر الفرع"), key="pos_branch_filter", placeholder="Branch...").strip()
         with ff2:
             pos_model = st.text_input(t("Model Code", "رمز الموديل"), key="pos_model_filter", placeholder="Model...").strip()
+        # Refresh button
+        if st.button(f"🔄 {t('Refresh','تحديث')}", type="primary", key="pos_refresh", use_container_width=True):
+            with st.spinner(t("Fetching...", "جاري الجلب...")):
+                df, diag = fetch_pos(pos_keys, pos_from.strftime("%Y-%m-%d"), pos_to.strftime("%Y-%m-%d"), pos_branch, pos_model)
+                st.session_state.pos_df = coerce_numerics(df) if df is not None else None
+                st.session_state.pos_diag = diag
+                st.session_state.pos_page = 0
+                st.session_state.pos_branch_page = 0
+                st.session_state.pos_cashier_page = 0
+                st.session_state.pos_last_refresh = datetime.now()
+                st.rerun()
         show_diag(st.session_state.get("pos_diag", []))
         pos_df = st.session_state.get("pos_df")
         if pos_df is None or pos_df.empty:
@@ -2154,32 +2155,34 @@ def show_dashboard():
             with p2:
                 st.download_button("⬇️ Excel", to_excel(localize_df(pos_df)), dl_name("pos", "xlsx"), "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet", use_container_width=True)
 
-    # ── SALES TAB (unchanged) ─────────────────────────────────────────────────
+    # ── SALES TAB (fixed order) ───────────────────────────────────────────────
     with tab_sales:
         st.markdown(f"<div class='section-header'>🛍️ {t('Sales Analytics','تحليلات المبيعات')}</div>", unsafe_allow_html=True)
-        fc1, fc2, fc3 = st.columns([2, 2, 1])
-        with fc1:
+        # Company selector and visualization mode
+        col1, col2 = st.columns([2, 2])
+        with col1:
             s_co_opts = [t("All Companies", "جميع الشركات")] + [get_system_name(k) for k in SYSTEM_KEYS]
             s_co = st.selectbox(t("Company", "الشركة"), s_co_opts, key="sales_company", label_visibility="collapsed")
             s_keys = SYSTEM_KEYS if s_co == t("All Companies", "جميع الشركات") else [k for k in SYSTEM_KEYS if get_system_name(k) == s_co]
-        with fc2:
+        with col2:
             sales_viz_mode = viz_mode_selector("sales_viz_mode")
-        with fc3:
-            if st.button(f"🔄 {t('Refresh','تحديث')}", type="primary", key="sales_refresh", use_container_width=True):
-                with st.spinner(t("Fetching...", "جاري الجلب...")):
-                    df, diag = fetch_sales(s_keys, s_from.strftime("%Y-%m-%d"), s_to.strftime("%Y-%m-%d"), s_model)
-                    st.session_state.sales_df = coerce_numerics(df) if df is not None else None
-                    st.session_state.sales_diag = diag
-                    st.session_state.sales_page = 0
-                    st.session_state.sales_cust_page = 0
-                    st.session_state.sales_last_refresh = datetime.now()
-                    st.rerun()
+        # Date inputs and model filter (must be defined before refresh button)
         fd1, fd2 = st.columns(2)
         with fd1:
             s_from = st.date_input(t("From", "من"), value=datetime.now().date() - timedelta(days=30), key="sales_date_from")
         with fd2:
             s_to = st.date_input(t("To", "إلى"), value=datetime.now().date(), key="sales_date_to")
         s_model = st.text_input(t("Model Code filter", "فلتر رمز الموديل"), key="sales_model_filter", placeholder="Model...").strip()
+        # Refresh button
+        if st.button(f"🔄 {t('Refresh','تحديث')}", type="primary", key="sales_refresh", use_container_width=True):
+            with st.spinner(t("Fetching...", "جاري الجلب...")):
+                df, diag = fetch_sales(s_keys, s_from.strftime("%Y-%m-%d"), s_to.strftime("%Y-%m-%d"), s_model)
+                st.session_state.sales_df = coerce_numerics(df) if df is not None else None
+                st.session_state.sales_diag = diag
+                st.session_state.sales_page = 0
+                st.session_state.sales_cust_page = 0
+                st.session_state.sales_last_refresh = datetime.now()
+                st.rerun()
         show_diag(st.session_state.get("sales_diag", []))
         sales_df = st.session_state.get("sales_df")
         if sales_df is None or sales_df.empty:
@@ -2236,32 +2239,34 @@ def show_dashboard():
                 with s2:
                     st.download_button("⬇️ Excel", to_excel(localize_df(sales_df)), dl_name("sales", "xlsx"), "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet", use_container_width=True)
 
-    # ── PURCHASE TAB (unchanged) ──────────────────────────────────────────────
+    # ── PURCHASE TAB (fixed order) ──────────────────────────────────────────────
     with tab_pur:
         st.markdown(f"<div class='section-header'>🔖 {t('Purchase Analytics','تحليلات المشتريات')}</div>", unsafe_allow_html=True)
-        fc1, fc2, fc3 = st.columns([2, 2, 1])
-        with fc1:
+        # Company selector and visualization mode
+        col1, col2 = st.columns([2, 2])
+        with col1:
             p_co_opts = [t("All Companies", "جميع الشركات")] + [get_system_name(k) for k in SYSTEM_KEYS]
             p_co = st.selectbox(t("Company", "الشركة"), p_co_opts, key="pur_company", label_visibility="collapsed")
             p_keys = SYSTEM_KEYS if p_co == t("All Companies", "جميع الشركات") else [k for k in SYSTEM_KEYS if get_system_name(k) == p_co]
-        with fc2:
+        with col2:
             pur_viz_mode = viz_mode_selector("pur_viz_mode")
-        with fc3:
-            if st.button(f"🔄 {t('Refresh','تحديث')}", type="primary", key="pur_refresh", use_container_width=True):
-                with st.spinner(t("Fetching...", "جاري الجلب...")):
-                    df, diag = fetch_purchase(p_keys, p_model, p_from.strftime("%Y-%m-%d"), p_to.strftime("%Y-%m-%d"))
-                    st.session_state.purchase_df = coerce_numerics(df) if df is not None else None
-                    st.session_state.pur_diag = diag
-                    st.session_state.pur_page = 0
-                    st.session_state.pur_vendor_page = 0
-                    st.session_state.pur_last_refresh = datetime.now()
-                    st.rerun()
+        # Date inputs and model filter (must be defined before refresh button)
         fd1, fd2 = st.columns(2)
         with fd1:
             p_from = st.date_input(t("From", "من"), value=datetime.now().date() - timedelta(days=90), key="pur_date_from")
         with fd2:
             p_to = st.date_input(t("To", "إلى"), value=datetime.now().date(), key="pur_date_to")
         p_model = st.text_input(t("Model Code filter", "فلتر رمز الموديل"), key="pur_model_filter", placeholder="Model...").strip()
+        # Refresh button
+        if st.button(f"🔄 {t('Refresh','تحديث')}", type="primary", key="pur_refresh", use_container_width=True):
+            with st.spinner(t("Fetching...", "جاري الجلب...")):
+                df, diag = fetch_purchase(p_keys, p_model, p_from.strftime("%Y-%m-%d"), p_to.strftime("%Y-%m-%d"))
+                st.session_state.purchase_df = coerce_numerics(df) if df is not None else None
+                st.session_state.pur_diag = diag
+                st.session_state.pur_page = 0
+                st.session_state.pur_vendor_page = 0
+                st.session_state.pur_last_refresh = datetime.now()
+                st.rerun()
         show_diag(st.session_state.get("pur_diag", []))
         pur_df = st.session_state.get("purchase_df")
         if pur_df is None or pur_df.empty:
