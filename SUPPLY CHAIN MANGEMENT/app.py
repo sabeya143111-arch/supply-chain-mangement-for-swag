@@ -1738,8 +1738,8 @@ def show_login():
     <div class="login-container">
         <div class="login-left">
             <div class="brand-block">
-                <div class="brand-icon">💎</div>
-                <div class="brand-name">SWAG Executive</div>
+                <div class="brand-icon"></div>
+                <div class="brand-name">SWAG</div>
                 <div style="margin-top: 1rem; color: {th("text_muted")}; font-size: 0.9rem;">
                     {t("Retail Operations Intelligence", "ذكاء عمليات التجزئة")}
                 </div>
