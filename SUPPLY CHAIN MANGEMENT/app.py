@@ -1073,11 +1073,23 @@ def _fetch_inventory_one(key: str, codes_tuple: tuple, exact: bool) -> tuple:
         variants = _odoo_call(url, db, uid, ak, "product.product", "search_read",
                               [[("product_tmpl_id", "in", template_ids)]],
                               {"fields": ["id", "product_tmpl_id"], "limit": 50000})
-        variant_to_tmpl = {v["id"]: v["product_tmpl_id"] for v in variants}
+
+        # Build mapping variant_id -> template_id (extract integer from possible list)
+        variant_to_tmpl = {}
+        for v in variants:
+            variant_id = v["id"]
+            tmpl_raw = v["product_tmpl_id"]
+            # tmpl_raw may be int or list [id, name]
+            if isinstance(tmpl_raw, list) and len(tmpl_raw) > 0:
+                tmpl_id = tmpl_raw[0]
+            else:
+                tmpl_id = tmpl_raw
+            variant_to_tmpl[variant_id] = tmpl_id
+
         variant_ids = list(variant_to_tmpl.keys())
 
         if not variant_ids:
-            # No variants → no stock
+            # No variants → zero stock for all templates
             total_rows = []
             branch_rows = []
             for tmpl_id, t in template_map.items():
@@ -1099,15 +1111,24 @@ def _fetch_inventory_one(key: str, codes_tuple: tuple, exact: bool) -> tuple:
         tmpl_qty = {}
         branch_rows = []
         for q in quants:
-            variant_id = q["product_id"][0] if isinstance(q["product_id"], list) else q["product_id"]
+            # product_id can be int or list [id, name]
+            prod_raw = q.get("product_id")
+            if isinstance(prod_raw, list) and len(prod_raw) > 0:
+                variant_id = prod_raw[0]
+            else:
+                variant_id = prod_raw
             tmpl_id = variant_to_tmpl.get(variant_id)
-            if not tmpl_id:
+            if tmpl_id is None:
                 continue
             qty = float(q.get("quantity") or 0)
             tmpl_qty[tmpl_id] = tmpl_qty.get(tmpl_id, 0) + qty
+
             # Branch row
             loc = q.get("location_id")
-            loc_name = loc[1] if isinstance(loc, list) and len(loc) > 1 else str(loc or "")
+            if isinstance(loc, list) and len(loc) > 1:
+                loc_name = loc[1]
+            else:
+                loc_name = str(loc or "")
             mc_val = (template_map.get(tmpl_id, {}).get("default_code") or "").strip()
             if mc_val:
                 branch_rows.append({
@@ -1131,7 +1152,6 @@ def _fetch_inventory_one(key: str, codes_tuple: tuple, exact: bool) -> tuple:
         return total_rows, branch_rows, {"system": name, "level": "ok", "msg": f"Loaded {len(total_rows)} products, {len(quants)} quant records."}
     except Exception as e:
         return [], [], {"system": name, "level": "error", "msg": f"{type(e).__name__}: {e}"}
-
 def fetch_inventory(selected_keys: list, codes_tuple: tuple = (), exact: bool = False):
     all_total, all_branch, diag = [], [], []
     with ThreadPoolExecutor(max_workers=4) as ex:
