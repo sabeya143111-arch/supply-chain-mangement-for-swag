@@ -13,8 +13,8 @@ import plotly.graph_objects as go
 import streamlit as st
 
 st.set_page_config(
-    page_title="SWAG",
-    page_icon="",
+    page_title="SWAG Executive Dashboard",
+    page_icon="💎",
     layout="wide",
     initial_sidebar_state="expanded",
 )
@@ -789,6 +789,9 @@ def to_excel_branch_matrix(branch_df: pd.DataFrame) -> bytes:
         output.seek(0)
         return output.getvalue()
 
+def dl_name(prefix: str, ext: str) -> str:
+    return f"{prefix}_{datetime.now().strftime('%Y%m%d_%H%M%S')}.{ext}"
+
 # ─────────────────────────────────────────────────────────────────────────────
 # SECTION 9: PAGINATED TABLE RENDERER
 # ─────────────────────────────────────────────────────────────────────────────
@@ -813,7 +816,7 @@ def render_paginated_table(df: pd.DataFrame, page_key: str, rows_per_page: int =
         cells = "".join(f"<td>{v}</td>" for v in row.values)
         rows_html += f"<tr>{cells}</tr>"
     st.markdown(
-        f"<div class='dataframe-wrap'></table><thead><tr>{header_html}</tr></thead><tbody>{rows_html}</tbody></table></div>",
+        f"<div class='dataframe-wrap'><table><thead><tr>{header_html}<tr></thead><tbody>{rows_html}</tbody></table></div>",
         unsafe_allow_html=True,
     )
     st.markdown(
@@ -1181,6 +1184,7 @@ def _fetch_inventory_one(key: str, codes_tuple: tuple, exact: bool) -> tuple:
         return total_rows, branch_rows, {"system": name, "level": "ok", "msg": f"Loaded {len(total_rows)} products, {len(quants)} quant records."}
     except Exception as e:
         return [], [], {"system": name, "level": "error", "msg": f"{type(e).__name__}: {e}"}
+
 def fetch_inventory(selected_keys: list, codes_tuple: tuple = (), exact: bool = False):
     all_total, all_branch, diag = [], [], []
     with ThreadPoolExecutor(max_workers=4) as ex:
@@ -1738,8 +1742,8 @@ def show_login():
     <div class="login-container">
         <div class="login-left">
             <div class="brand-block">
-                <div class="brand-icon"></div>
-                <div class="brand-name">SWAG</div>
+                <div class="brand-icon">💎</div>
+                <div class="brand-name">SWAG Executive</div>
                 <div style="margin-top: 1rem; color: {th("text_muted")}; font-size: 0.9rem;">
                     {t("Retail Operations Intelligence", "ذكاء عمليات التجزئة")}
                 </div>
@@ -1791,7 +1795,7 @@ def show_dashboard():
                 <div style="display: flex; align-items: center; gap: 0.8rem;">
                     <span style="font-size: 2rem;">💎</span>
                     <div>
-                        <div style="font-weight: 700; font-size: 1rem; color: {th("text")};">SWAG</div>
+                        <div style="font-weight: 700; font-size: 1rem; color: {th("text")};">SWAG Executive</div>
                         <div style="font-size: 0.7rem; color: {th("text_muted")};">{st.session_state.user_email}</div>
                     </div>
                 </div>
@@ -1854,7 +1858,7 @@ def show_dashboard():
         f"""
         <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 1.5rem;">
             <div>
-                <h1 style="margin:0; font-weight: 700; font-size: 1.8rem; color: {th("text")};">SWAG  Operations</h1>
+                <h1 style="margin:0; font-weight: 700; font-size: 1.8rem; color: {th("text")};">SWAG Executive Operations</h1>
                 <p style="margin:0; color: {th("text_muted")}; font-size: 0.85rem;">{t('Multi-Company · Inventory · POS · Sales · Purchasing · AI Insights','متعدد الشركات · المخزون · نقاط البيع · المبيعات · المشتريات · تحليلات ذكية')}</p>
             </div>
             <div style="background: {th("card_bg")}; border: 1px solid {th("border")}; border-radius: 30px; padding: 0.3rem 1rem; font-size: 0.8rem; color: {th("text_muted")};">
