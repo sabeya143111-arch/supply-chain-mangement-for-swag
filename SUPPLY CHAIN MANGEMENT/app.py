@@ -13,8 +13,8 @@ import plotly.graph_objects as go
 import streamlit as st
 
 st.set_page_config(
-    page_title="SWAG Dashboard",
-    page_icon="",
+    page_title="SWAG Executive Dashboard",
+    page_icon="💎",
     layout="wide",
     initial_sidebar_state="expanded",
 )
@@ -1108,18 +1108,28 @@ def _fetch_inventory_one(key: str, codes_tuple: tuple, exact: bool) -> tuple:
         tmpl_to_model = {p["id"]: (p.get("default_code") or "").strip() for p in products}
         tmpl_to_name = {p["id"]: p.get("name", "") for p in products}
         tmpl_to_price = {p["id"]: float(p.get("list_price") or 0) for p in products}
+
+        # FIX: fetch variant products that belong to the product templates
+        variant_products = _odoo_call(url, db, uid, ak, "product.product", "search_read",
+                                      [[("product_tmpl_id", "in", prod_ids)]],
+                                      {"fields": ["id", "product_tmpl_id"], "limit": 50000})
+        variant_to_tmpl = {}
+        for vp in variant_products:
+            t_raw = vp.get("product_tmpl_id")
+            tmpl_id_v = t_raw if isinstance(t_raw, int) else (t_raw[0] if isinstance(t_raw, list) else t_raw)
+            variant_to_tmpl[vp["id"]] = tmpl_id_v
+        variant_ids = list(variant_to_tmpl.keys())
+
+        # FIX: query stock.quant using valid direct field product_id
         quants = _odoo_call(url, db, uid, ak, "stock.quant", "search_read",
-                            [[("product_id.product_tmpl_id", "in", prod_ids), ("location_id.usage", "=", "internal")]],
-                            {"fields": ["product_id", "location_id", "quantity", "product_id.product_tmpl_id"], "limit": 50000})
+                            [[("product_id", "in", variant_ids), ("location_id.usage", "=", "internal")]],
+                            {"fields": ["product_id", "location_id", "quantity"], "limit": 50000})
         tmpl_qty: dict = {}
         branch_rows = []
         for q in quants:
-            tmpl_raw = q.get("product_id.product_tmpl_id")
-            if isinstance(tmpl_raw, list):
-                tmpl_id = tmpl_raw[0]
-            else:
-                pid_raw = q.get("product_id")
-                tmpl_id = pid_raw[0] if isinstance(pid_raw, list) else pid_raw
+            pid_raw = q.get("product_id")
+            variant_id = pid_raw if isinstance(pid_raw, int) else (pid_raw[0] if isinstance(pid_raw, list) else pid_raw)
+            tmpl_id = variant_to_tmpl.get(variant_id, variant_id)
             qty = float(q.get("quantity") or 0)
             tmpl_qty[tmpl_id] = tmpl_qty.get(tmpl_id, 0) + qty
             loc = q.get("location_id")
@@ -1696,8 +1706,8 @@ def show_login():
     _, col2, _ = st.columns([1, 1.1, 1])
     with col2:
         st.markdown("<div class='login-card'>", unsafe_allow_html=True)
-        st.markdown("<div class='login-orb'></div>", unsafe_allow_html=True)
-        st.markdown("<div class='login-title'>SWAG DASHBORD</div>", unsafe_allow_html=True)
+        st.markdown("<div class='login-orb'>💎</div>", unsafe_allow_html=True)
+        st.markdown("<div class='login-title'>SWAG Executive</div>", unsafe_allow_html=True)
         st.markdown("<div class='login-subtitle'>Multi-Company Operations · Board-Level Analytics</div>", unsafe_allow_html=True)
         if st.session_state.get("login_error"):
             st.markdown(f"<div class='alert-banner'>❌ {st.session_state.login_error}</div>", unsafe_allow_html=True)
@@ -1732,8 +1742,8 @@ def show_dashboard():
     with st.sidebar:
         st.markdown(
             f"<div class='sidebar-brand'>"
-            f"<div class='sidebar-brand-icon'></div>"
-            f"<div class='sidebar-brand-name'>SWAG DASHBARD</div>"
+            f"<div class='sidebar-brand-icon'>💎</div>"
+            f"<div class='sidebar-brand-name'>SWAG Executive</div>"
             f"<div class='sidebar-brand-user'>{st.session_state.user_email}</div>"
             f"</div>",
             unsafe_allow_html=True,
@@ -1788,8 +1798,8 @@ def show_dashboard():
     # ── Header ──
     st.markdown(
         f"<div class='dash-header'>"
-        f"<div class='dash-logo'></div>"
-        f"<div class='dash-title'>SWAg</div>"
+        f"<div class='dash-logo'>💎</div>"
+        f"<div class='dash-title'>SWAG — Executive Operations</div>"
         f"<div class='dash-subtitle'>{t('Multi-Company · Inventory · POS · Sales · Purchasing · AI Insights','متعدد الشركات · المخزون · نقاط البيع · المبيعات · المشتريات · تحليلات ذكية')}</div>"
         f"<div class='dash-tagline'>⚡ {t('Real-time Odoo Intelligence','تحليلات Odoo الفورية')}</div>"
         f"</div>",
