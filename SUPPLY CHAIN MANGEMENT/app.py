@@ -1732,8 +1732,8 @@ def show_dashboard():
     with st.sidebar:
         st.markdown(
             f"<div class='sidebar-brand'>"
-            f"<div class='sidebar-brand-icon'>💎</div>"
-            f"<div class='sidebar-brand-name'>SWAG Executive</div>"
+            f"<div class='sidebar-brand-icon'></div>"
+            f"<div class='sidebar-brand-name'>SWAG DASHBARD</div>"
             f"<div class='sidebar-brand-user'>{st.session_state.user_email}</div>"
             f"</div>",
             unsafe_allow_html=True,
