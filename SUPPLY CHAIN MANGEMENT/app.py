@@ -1799,7 +1799,7 @@ def show_dashboard():
     st.markdown(
         f"<div class='dash-header'>"
         f"<div class='dash-logo'></div>"
-        f"<div class='dash-title'>SWAG — Executive Operations</div>"
+        f"<div class='dash-title'>SWAG </div>"
         f"<div class='dash-subtitle'>{t('Multi-Company · Inventory · POS · Sales · Purchasing · AI Insights','متعدد الشركات · المخزون · نقاط البيع · المبيعات · المشتريات · تحليلات ذكية')}</div>"
         f"<div class='dash-tagline'>⚡ {t('Real-time Odoo Intelligence','تحليلات Odoo الفورية')}</div>"
         f"</div>",
