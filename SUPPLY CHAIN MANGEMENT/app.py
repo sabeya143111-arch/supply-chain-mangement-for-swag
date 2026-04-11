@@ -735,30 +735,59 @@ def to_csv(df: pd.DataFrame) -> bytes:
     return df.to_csv(index=False).encode("utf-8-sig")
 
 def to_excel(df: pd.DataFrame) -> bytes:
+    """Convert DataFrame to Excel bytes with robust error handling."""
+    if df is None or df.empty:
+        # Return an empty Excel file with a note
+        output = io.BytesIO()
+        with pd.ExcelWriter(output, engine="openpyxl") as writer:
+            pd.DataFrame({"Message": ["No data available"]}).to_excel(writer, sheet_name="Data", index=False)
+        output.seek(0)
+        return output.getvalue()
     output = io.BytesIO()
     with pd.ExcelWriter(output, engine="openpyxl") as writer:
         df.to_excel(writer, sheet_name="Data", index=False)
+    output.seek(0)
     return output.getvalue()
 
 def to_excel_branch_matrix(branch_df: pd.DataFrame) -> bytes:
+    """Create branch matrix Excel with string conversion for pivot."""
     if branch_df is None or branch_df.empty:
-        return b""
+        output = io.BytesIO()
+        with pd.ExcelWriter(output, engine="openpyxl") as writer:
+            pd.DataFrame({"Message": ["No branch data available"]}).to_excel(writer, sheet_name="Branch_Matrix", index=False)
+        output.seek(0)
+        return output.getvalue()
+
     branch_c = get_display_col(branch_df, "Branch")
     model_c = get_display_col(branch_df, "Model Code")
     qty_c = get_display_col(branch_df, "On Hand")
+
     if branch_c not in branch_df.columns or model_c not in branch_df.columns:
-        return b""
+        output = io.BytesIO()
+        with pd.ExcelWriter(output, engine="openpyxl") as writer:
+            pd.DataFrame({"Error": ["Required columns missing for branch matrix"]}).to_excel(writer, sheet_name="Error", index=False)
+        output.seek(0)
+        return output.getvalue()
+
     try:
+        # Ensure columns are string type to avoid pivot issues
+        branch_df[branch_c] = branch_df[branch_c].astype(str)
+        branch_df[model_c] = branch_df[model_c].astype(str)
         pivot = branch_df.pivot_table(index=model_c, columns=branch_c, values=qty_c, aggfunc="sum", fill_value=0)
+        # Convert all values to int for cleaner output
+        pivot = pivot.astype(int)
         output = io.BytesIO()
         with pd.ExcelWriter(output, engine="openpyxl") as writer:
             pivot.to_excel(writer, sheet_name="Branch_Matrix")
+        output.seek(0)
         return output.getvalue()
-    except Exception:
-        return b""
-
-def dl_name(prefix: str, ext: str) -> str:
-    return f"{prefix}_{datetime.now().strftime('%Y%m%d_%H%M%S')}.{ext}"
+    except Exception as e:
+        # Fallback: return error sheet
+        output = io.BytesIO()
+        with pd.ExcelWriter(output, engine="openpyxl") as writer:
+            pd.DataFrame({"Error": [f"Failed to create branch matrix: {str(e)}"]}).to_excel(writer, sheet_name="Error", index=False)
+        output.seek(0)
+        return output.getvalue()
 
 # ─────────────────────────────────────────────────────────────────────────────
 # SECTION 9: PAGINATED TABLE RENDERER
