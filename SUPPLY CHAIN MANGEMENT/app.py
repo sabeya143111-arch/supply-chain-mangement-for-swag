@@ -13,8 +13,8 @@ import plotly.graph_objects as go
 import streamlit as st
 
 st.set_page_config(
-    page_title="SWAG Executive Dashboard",
-    page_icon="💎",
+    page_title="SWAG",
+    page_icon="",
     layout="wide",
     initial_sidebar_state="expanded",
 )
@@ -1791,7 +1791,7 @@ def show_dashboard():
                 <div style="display: flex; align-items: center; gap: 0.8rem;">
                     <span style="font-size: 2rem;">💎</span>
                     <div>
-                        <div style="font-weight: 700; font-size: 1rem; color: {th("text")};">SWAG Executive</div>
+                        <div style="font-weight: 700; font-size: 1rem; color: {th("text")};">SWAG</div>
                         <div style="font-size: 0.7rem; color: {th("text_muted")};">{st.session_state.user_email}</div>
                     </div>
                 </div>
@@ -1854,7 +1854,7 @@ def show_dashboard():
         f"""
         <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 1.5rem;">
             <div>
-                <h1 style="margin:0; font-weight: 700; font-size: 1.8rem; color: {th("text")};">SWAG Executive Operations</h1>
+                <h1 style="margin:0; font-weight: 700; font-size: 1.8rem; color: {th("text")};">SWAG  Operations</h1>
                 <p style="margin:0; color: {th("text_muted")}; font-size: 0.85rem;">{t('Multi-Company · Inventory · POS · Sales · Purchasing · AI Insights','متعدد الشركات · المخزون · نقاط البيع · المبيعات · المشتريات · تحليلات ذكية')}</p>
             </div>
             <div style="background: {th("card_bg")}; border: 1px solid {th("border")}; border-radius: 30px; padding: 0.3rem 1rem; font-size: 0.8rem; color: {th("text_muted")};">
