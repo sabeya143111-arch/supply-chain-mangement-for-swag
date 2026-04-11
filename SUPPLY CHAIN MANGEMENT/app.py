@@ -1,6 +1,4 @@
-# app.py — SWAG EXECUTIVE DASHBOARD — STABLE v3.2
-# Full corrected file - Architecture 100% preserved, all bugs fixed
-
+# app.py — SWAG EXECUTIVE DASHBOARD — STABLE v4.0 PREMIUM
 import io
 import re
 import hashlib
@@ -15,16 +13,56 @@ import plotly.graph_objects as go
 import streamlit as st
 
 st.set_page_config(
-    page_title="SWAG  Dashboard",
-    page_icon="",
+    page_title="SWAG Executive Dashboard",
+    page_icon="💎",
     layout="wide",
     initial_sidebar_state="expanded",
 )
 
 # ─────────────────────────────────────────────────────────────────────────────
-# SECTION 1: THEMES
+# SECTION 0: COLOR UTILITIES
+# ─────────────────────────────────────────────────────────────────────────────
+def hex_to_rgba(hex_color: str, alpha: float = 0.18) -> str:
+    """Convert hex color to rgba() string safe for Plotly fillcolor."""
+    try:
+        h = hex_color.lstrip("#")
+        if len(h) == 3:
+            h = "".join(c * 2 for c in h)
+        if len(h) != 6:
+            return f"rgba(102,126,234,{alpha})"
+        r, g, b = int(h[0:2], 16), int(h[2:4], 16), int(h[4:6], 16)
+        return f"rgba({r},{g},{b},{alpha})"
+    except Exception:
+        return f"rgba(102,126,234,{alpha})"
+
+# ─────────────────────────────────────────────────────────────────────────────
+# SECTION 1: THEMES — ULTRA PREMIUM ENTERPRISE
 # ─────────────────────────────────────────────────────────────────────────────
 THEMES = {
+    "Midnight Executive": {
+        "bg": "linear-gradient(160deg,#05070f 0%,#0d1117 40%,#0a0e1a 100%)",
+        "sidebar_bg": "linear-gradient(180deg,#0d1117 0%,#090d14 100%)",
+        "card_bg": "linear-gradient(145deg,rgba(255,255,255,0.04),rgba(255,255,255,0.02))",
+        "card_bg_solid": "#0d1117",
+        "accent1": "#4f8ef7",
+        "accent2": "#a78bfa",
+        "accent3": "#34d399",
+        "accent4": "#fbbf24",
+        "text": "#e2e8f0",
+        "text_muted": "#64748b",
+        "text_label": "#94a3b8",
+        "border": "rgba(255,255,255,0.07)",
+        "input_bg": "rgba(255,255,255,0.04)",
+        "metric_gradient": "linear-gradient(90deg,#4f8ef7,#a78bfa)",
+        "tab_active": "linear-gradient(90deg,#4f8ef7,#7c3aed)",
+        "title_gradient": "linear-gradient(90deg,#4f8ef7,#a78bfa,#34d399,#4f8ef7)",
+        "button_gradient": "linear-gradient(135deg,#4f8ef7,#7c3aed)",
+        "plotly_template": "plotly_dark",
+        "plotly_colors": ["#4f8ef7","#a78bfa","#34d399","#fbbf24","#f87171","#38bdf8","#fb923c","#e879f9"],
+        "danger": "#f87171",
+        "warning": "#fbbf24",
+        "success": "#34d399",
+    },
     "Dark Executive": {
         "bg": "linear-gradient(135deg,#0f0c29,#302b63,#24243e)",
         "sidebar_bg": "linear-gradient(180deg,#1a1a2e 0%,#16213e 100%)",
@@ -42,7 +80,7 @@ THEMES = {
         "metric_gradient": "linear-gradient(90deg,#667eea,#f093fb)",
         "tab_active": "linear-gradient(90deg,#667eea,#764ba2)",
         "title_gradient": "linear-gradient(90deg,#667eea,#f093fb,#43e97b,#667eea)",
-        "button_gradient": "linear-gradient(90deg,#667eea,#764ba2,#f093fb,#667eea)",
+        "button_gradient": "linear-gradient(135deg,#667eea,#764ba2)",
         "plotly_template": "plotly_dark",
         "plotly_colors": ["#667eea","#f093fb","#43e97b","#f6d365","#fda085","#a18cd1","#96fbc4","#4facfe"],
         "danger": "#f43f5e",
@@ -50,7 +88,7 @@ THEMES = {
         "success": "#22c55e",
     },
     "Light Executive": {
-        "bg": "linear-gradient(135deg,#f0f4ff,#ffffff,#f8f0ff)",
+        "bg": "linear-gradient(160deg,#f8faff 0%,#ffffff 50%,#f5f0ff 100%)",
         "sidebar_bg": "linear-gradient(180deg,#ffffff 0%,#f0f4ff 100%)",
         "card_bg": "linear-gradient(145deg,#ffffff,#f8f8ff)",
         "card_bg_solid": "#ffffff",
@@ -66,7 +104,7 @@ THEMES = {
         "metric_gradient": "linear-gradient(90deg,#4f46e5,#9333ea)",
         "tab_active": "linear-gradient(90deg,#4f46e5,#7c3aed)",
         "title_gradient": "linear-gradient(90deg,#4f46e5,#9333ea,#16a34a,#4f46e5)",
-        "button_gradient": "linear-gradient(90deg,#4f46e5,#7c3aed,#9333ea,#4f46e5)",
+        "button_gradient": "linear-gradient(135deg,#4f46e5,#7c3aed)",
         "plotly_template": "plotly_white",
         "plotly_colors": ["#4f46e5","#9333ea","#16a34a","#d97706","#dc2626","#0891b2","#7c3aed","#059669"],
         "danger": "#dc2626",
@@ -74,10 +112,10 @@ THEMES = {
         "success": "#16a34a",
     },
     "Luxury Gold": {
-        "bg": "linear-gradient(135deg,#0a0800,#1a1400,#0d0a00)",
+        "bg": "linear-gradient(160deg,#080600 0%,#120e00 50%,#0a0800 100%)",
         "sidebar_bg": "linear-gradient(180deg,#0f0c00 0%,#1a1400 100%)",
-        "card_bg": "linear-gradient(145deg,#1a1400,#2a2000)",
-        "card_bg_solid": "#1a1400",
+        "card_bg": "linear-gradient(145deg,rgba(212,175,55,0.07),rgba(212,175,55,0.03))",
+        "card_bg_solid": "#120e00",
         "accent1": "#d4af37",
         "accent2": "#f5c842",
         "accent3": "#c8a415",
@@ -85,12 +123,12 @@ THEMES = {
         "text": "#f5e6c8",
         "text_muted": "#a89060",
         "text_label": "#d4af37",
-        "border": "#d4af3722",
-        "input_bg": "#1a1400",
+        "border": "rgba(212,175,55,0.15)",
+        "input_bg": "rgba(212,175,55,0.05)",
         "metric_gradient": "linear-gradient(90deg,#d4af37,#f5c842)",
-        "tab_active": "linear-gradient(90deg,#d4af37,#c8a415)",
+        "tab_active": "linear-gradient(90deg,#c8a415,#d4af37)",
         "title_gradient": "linear-gradient(90deg,#d4af37,#f5c842,#fff7d4,#d4af37)",
-        "button_gradient": "linear-gradient(90deg,#d4af37,#c8a415,#f5c842,#d4af37)",
+        "button_gradient": "linear-gradient(135deg,#c8a415,#d4af37)",
         "plotly_template": "plotly_dark",
         "plotly_colors": ["#d4af37","#f5c842","#c8a415","#fff7d4","#a89060","#ffd700","#daa520","#b8860b"],
         "danger": "#ff6b6b",
@@ -98,39 +136,39 @@ THEMES = {
         "success": "#90ee90",
     },
     "Glass Premium": {
-        "bg": "linear-gradient(135deg,#0a0a1a 0%,#1a0a2e 50%,#0a1a2e 100%)",
-        "sidebar_bg": "linear-gradient(180deg,rgba(255,255,255,0.05) 0%,rgba(255,255,255,0.02) 100%)",
-        "card_bg": "linear-gradient(145deg,rgba(255,255,255,0.08),rgba(255,255,255,0.04))",
-        "card_bg_solid": "rgba(255,255,255,0.06)",
-        "accent1": "#00d4ff",
+        "bg": "linear-gradient(160deg,#080818 0%,#12082a 50%,#081828 100%)",
+        "sidebar_bg": "linear-gradient(180deg,rgba(255,255,255,0.04) 0%,rgba(255,255,255,0.02) 100%)",
+        "card_bg": "linear-gradient(145deg,rgba(255,255,255,0.07),rgba(255,255,255,0.03))",
+        "card_bg_solid": "rgba(255,255,255,0.05)",
+        "accent1": "#00c6ff",
         "accent2": "#ff6b9d",
-        "accent3": "#00ff88",
-        "accent4": "#ffd700",
+        "accent3": "#00e676",
+        "accent4": "#ffd740",
         "text": "#ffffff",
-        "text_muted": "#aaaacc",
-        "text_label": "#00d4ff",
-        "border": "rgba(255,255,255,0.15)",
-        "input_bg": "rgba(255,255,255,0.08)",
-        "metric_gradient": "linear-gradient(90deg,#00d4ff,#ff6b9d)",
-        "tab_active": "linear-gradient(90deg,rgba(0,212,255,0.3),rgba(255,107,157,0.3))",
-        "title_gradient": "linear-gradient(90deg,#00d4ff,#ff6b9d,#00ff88,#00d4ff)",
-        "button_gradient": "linear-gradient(90deg,#00d4ff,#ff6b9d,#00ff88,#00d4ff)",
+        "text_muted": "#8899bb",
+        "text_label": "#00c6ff",
+        "border": "rgba(255,255,255,0.1)",
+        "input_bg": "rgba(255,255,255,0.07)",
+        "metric_gradient": "linear-gradient(90deg,#00c6ff,#ff6b9d)",
+        "tab_active": "linear-gradient(90deg,rgba(0,198,255,0.25),rgba(255,107,157,0.25))",
+        "title_gradient": "linear-gradient(90deg,#00c6ff,#ff6b9d,#00e676,#00c6ff)",
+        "button_gradient": "linear-gradient(135deg,#00c6ff,#7b2ff7)",
         "plotly_template": "plotly_dark",
-        "plotly_colors": ["#00d4ff","#ff6b9d","#00ff88","#ffd700","#ff6b35","#a855f7","#34d399","#818cf8"],
+        "plotly_colors": ["#00c6ff","#ff6b9d","#00e676","#ffd740","#ff6b35","#a855f7","#34d399","#818cf8"],
         "danger": "#ff6b9d",
-        "warning": "#ffd700",
-        "success": "#00ff88",
+        "warning": "#ffd740",
+        "success": "#00e676",
     },
 }
 
 def get_theme():
-    t_val = st.session_state.get("theme", "Dark Executive")
-    return t_val if t_val in THEMES else "Dark Executive"
+    t_val = st.session_state.get("theme", "Midnight Executive")
+    return t_val if t_val in THEMES else "Midnight Executive"
 
 def th(key):
     return THEMES[get_theme()].get(key, "")
 
-def th_color(key, fallback="#667eea"):
+def th_color(key, fallback="#4f8ef7"):
     val = str(THEMES[get_theme()].get(key, fallback) or fallback).strip()
     if re.fullmatch(r"#([0-9a-fA-F]{3}|[0-9a-fA-F]{6})", val):
         return val
@@ -138,102 +176,356 @@ def th_color(key, fallback="#667eea"):
     return f"#{m.group(1)}" if m else fallback
 
 # ─────────────────────────────────────────────────────────────────────────────
-# SECTION 2: CSS
+# SECTION 2: CSS — ENTERPRISE PREMIUM
 # ─────────────────────────────────────────────────────────────────────────────
 def build_css():
     border_val = th("border")
     card_bg_solid = th("card_bg_solid")
     tab_active = th("tab_active")
     a1 = th_color("accent1")
-    warning_color = th_color("warning", "#f59e0b")
-    danger_color = th_color("danger", "#f43f5e")
-    success_color = th_color("success", "#22c55e")
-    a4 = th_color("accent4", "#f6d365")
+    a2 = th_color("accent2")
+    warning_color = th_color("warning", "#fbbf24")
+    danger_color = th_color("danger", "#f87171")
+    success_color = th_color("success", "#34d399")
+    a4 = th_color("accent4", "#fbbf24")
+    a1_rgba = hex_to_rgba(a1, 0.12)
+    a1_rgba_btn = hex_to_rgba(a1, 0.55)
     return f"""
     <style>
-    @import url('https://fonts.googleapis.com/css2?family=IBM+Plex+Sans+Arabic:wght@300;400;500;600;700&family=Space+Grotesk:wght@300;400;500;600;700&display=swap');
-    *,html,body,[class*="css"]{{font-family:'IBM Plex Sans Arabic','Space Grotesk',sans-serif;box-sizing:border-box;}}
+    @import url('https://fonts.googleapis.com/css2?family=IBM+Plex+Sans+Arabic:wght@300;400;500;600;700&family=Inter:wght@300;400;500;600;700;800&family=JetBrains+Mono:wght@400;600&display=swap');
+    *,html,body,[class*="css"]{{font-family:'Inter','IBM Plex Sans Arabic',sans-serif;box-sizing:border-box;}}
     .stApp{{background:{th("bg")};min-height:100vh;}}
-    section[data-testid="stSidebar"]{{background:{th("sidebar_bg")}!important;border-right:1px solid {border_val};backdrop-filter:blur(20px);}}
+    section[data-testid="stSidebar"]{{background:{th("sidebar_bg")}!important;border-right:1px solid {border_val};backdrop-filter:blur(24px);-webkit-backdrop-filter:blur(24px);}}
     section[data-testid="stSidebar"] *{{color:{th("text")}!important;}}
     section[data-testid="stSidebar"] input{{color:{th("text")}!important;}}
+
+    /* ── Animations ── */
     @keyframes shimmer{{0%{{background-position:-400% center}}100%{{background-position:400% center}}}}
-    @keyframes fadeInDown{{from{{opacity:0;transform:translateY(-20px)}}to{{opacity:1;transform:translateY(0)}}}}
-    @keyframes fadeInUp{{from{{opacity:0;transform:translateY(20px)}}to{{opacity:1;transform:translateY(0)}}}}
-    @keyframes float{{0%,100%{{transform:translateY(0)}}50%{{transform:translateY(-8px)}}}}
-    @keyframes btnShine{{0%{{background-position:-200% center}}100%{{background-position:200% center}}}}
-    @keyframes cardEntrance{{from{{opacity:0;transform:translateY(16px) scale(0.97)}}to{{opacity:1;transform:translateY(0) scale(1)}}}}
-    @keyframes pulse{{0%,100%{{box-shadow:0 0 0 0 {a1}44}}50%{{box-shadow:0 0 20px 8px {a1}22}}}}
-    .stTextInput input,.stNumberInput input,.stTextArea textarea{{background:{th("input_bg")}!important;border:1px solid {a1}66!important;border-radius:10px!important;color:{th("text")}!important;caret-color:{th("text_label")}!important;transition:all 0.3s!important;}}
-    .stTextInput input:focus{{border-color:{a1}!important;box-shadow:0 0 0 3px {a1}33!important;}}
-    .stTextInput label,.stNumberInput label,.stTextArea label{{color:{th("text_label")}!important;font-weight:600!important;}}
-    .stFormSubmitButton button,.stButton button[kind="primary"]{{background:{th("button_gradient")}!important;background-size:300% auto!important;border:none!important;border-radius:12px!important;color:white!important;font-weight:700!important;padding:12px!important;animation:btnShine 3s linear infinite!important;box-shadow:0 4px 20px {a1}55!important;}}
-    .stFormSubmitButton button:hover{{transform:translateY(-2px) scale(1.02)!important;}}
-    .stButton button[kind="secondary"]{{background:{th("card_bg")}!important;border:1px solid {a1}66!important;color:{th("text_label")}!important;border-radius:10px!important;}}
+    @keyframes fadeInDown{{from{{opacity:0;transform:translateY(-24px)}}to{{opacity:1;transform:translateY(0)}}}}
+    @keyframes fadeInUp{{from{{opacity:0;transform:translateY(24px)}}to{{opacity:1;transform:translateY(0)}}}}
+    @keyframes float{{0%,100%{{transform:translateY(0)}}50%{{transform:translateY(-10px)}}}}
+    @keyframes cardEntrance{{from{{opacity:0;transform:translateY(18px) scale(0.97)}}to{{opacity:1;transform:translateY(0) scale(1)}}}}
+    @keyframes pulse-ring{{0%{{box-shadow:0 0 0 0 {a1}55}}70%{{box-shadow:0 0 0 12px {a1}00}}100%{{box-shadow:0 0 0 0 {a1}00}}}}
+    @keyframes spin-slow{{from{{transform:rotate(0deg)}}to{{transform:rotate(360deg)}}}}
+
+    /* ── Inputs ── */
+    .stTextInput input,.stNumberInput input,.stTextArea textarea{{
+        background:{th("input_bg")}!important;
+        border:1px solid {a1}44!important;
+        border-radius:10px!important;
+        color:{th("text")}!important;
+        caret-color:{a1}!important;
+        transition:all 0.25s ease!important;
+        font-size:0.875rem!important;
+    }}
+    .stTextInput input:focus{{border-color:{a1}!important;box-shadow:0 0 0 3px {a1_rgba}!important;}}
+    .stTextInput label,.stNumberInput label,.stTextArea label{{color:{th("text_label")}!important;font-weight:600!important;font-size:0.8rem!important;letter-spacing:0.02em!important;}}
+
+    /* ── Buttons ── */
+    .stFormSubmitButton button,.stButton button[kind="primary"]{{
+        background:{th("button_gradient")}!important;
+        border:none!important;
+        border-radius:10px!important;
+        color:white!important;
+        font-weight:700!important;
+        font-size:0.875rem!important;
+        letter-spacing:0.03em!important;
+        padding:11px 20px!important;
+        box-shadow:0 4px 20px {a1_rgba_btn}!important;
+        transition:all 0.2s ease!important;
+    }}
+    .stFormSubmitButton button:hover,.stButton button[kind="primary"]:hover{{
+        transform:translateY(-2px)!important;
+        box-shadow:0 8px 30px {a1_rgba_btn}!important;
+    }}
+    .stButton button[kind="secondary"]{{
+        background:{th("card_bg")}!important;
+        border:1px solid {a1}44!important;
+        color:{th("text_label")}!important;
+        border-radius:10px!important;
+        font-size:0.84rem!important;
+        transition:all 0.2s!important;
+    }}
     .stButton button{{color:{th("text_label")}!important;}}
-    .stDownloadButton button{{background:{th("card_bg")}!important;border:1px solid {a1}66!important;border-radius:10px!important;color:{th("text_label")}!important;font-size:0.78rem!important;font-weight:600!important;padding:6px 14px!important;}}
-    .stDownloadButton button:hover{{background:{tab_active}!important;color:white!important;border-color:transparent!important;}}
-    .dash-header{{text-align:center;padding:16px 0 24px;}}
-    .dash-title{{font-size:2.4rem;font-weight:700;background:{th("title_gradient")};background-size:300% auto;-webkit-background-clip:text;-webkit-text-fill-color:transparent;animation:shimmer 4s linear infinite;}}
-    .dash-subtitle{{color:{th("text_muted")};font-size:0.92rem;margin-top:-4px;}}
-    [data-testid="stMetric"]{{background:{th("card_bg")}!important;border:1px solid {border_val}!important;border-radius:16px!important;padding:16px 20px!important;animation:cardEntrance 0.6s ease;transition:transform 0.2s;}}
-    [data-testid="stMetric"]:hover{{transform:translateY(-3px);}}
-    [data-testid="stMetricLabel"]{{color:{th("text_muted")}!important;font-size:0.82rem!important;}}
-    [data-testid="stMetricValue"]{{font-size:1.7rem!important;font-weight:700!important;background:{th("metric_gradient")};-webkit-background-clip:text;-webkit-text-fill-color:transparent;}}
-    .stTabs [data-baseweb="tab-list"]{{background:{th("card_bg")};border-radius:12px;padding:4px;gap:4px;border:1px solid {border_val};}}
-    .stTabs [data-baseweb="tab"]{{color:{th("text_muted")}!important;border-radius:10px!important;font-size:0.83rem!important;font-weight:600!important;padding:8px 16px!important;transition:all 0.2s!important;}}
-    .stTabs [aria-selected="true"]{{background:{tab_active}!important;color:white!important;box-shadow:0 4px 12px {a1}55!important;}}
-    .info-banner{{background:linear-gradient(135deg,{a1}22,{a1}11);border-left:4px solid {a1};border-radius:10px;padding:11px 16px;margin:8px 0 16px;font-size:0.85rem;color:{th("text")}!important;}}
-    .warn-banner{{background:linear-gradient(135deg,{warning_color}22,{warning_color}11);border-left:4px solid {warning_color};border-radius:10px;padding:11px 16px;margin:8px 0 16px;font-size:0.85rem;color:{th("text")}!important;}}
-    .alert-banner{{background:linear-gradient(135deg,{danger_color}22,{danger_color}11);border-left:4px solid {danger_color};border-radius:10px;padding:11px 16px;margin:8px 0 16px;font-size:0.85rem;color:{th("text")}!important;}}
-    .ok-banner{{background:linear-gradient(135deg,{success_color}22,{success_color}11);border-left:4px solid {success_color};border-radius:10px;padding:11px 16px;margin:8px 0 16px;font-size:0.85rem;color:{th("text")}!important;}}
-    .diag-banner{{background:linear-gradient(135deg,#1a1a2e,#2d2b55);border:1px solid {a4}44;border-radius:10px;padding:14px 18px;margin:8px 0 16px;font-size:0.82rem;color:{th("text")}!important;font-family:'JetBrains Mono',monospace;}}
-    .exec-card{{background:{th("card_bg")};border:1px solid {border_val};border-radius:16px;padding:20px 24px;font-size:0.88rem;color:{th("text")}!important;line-height:1.9;animation:cardEntrance 0.5s ease;box-shadow:0 4px 20px #00000055;backdrop-filter:blur(10px);}}
+    .stDownloadButton button{{
+        background:{th("card_bg")}!important;
+        border:1px solid {a1}44!important;
+        border-radius:8px!important;
+        color:{th("text_label")}!important;
+        font-size:0.78rem!important;
+        font-weight:600!important;
+        padding:6px 14px!important;
+        transition:all 0.2s!important;
+    }}
+    .stDownloadButton button:hover{{
+        background:{th("button_gradient")}!important;
+        color:white!important;
+        border-color:transparent!important;
+        transform:translateY(-1px)!important;
+    }}
+
+    /* ── Header ── */
+    .dash-header{{
+        text-align:center;
+        padding:32px 0 28px;
+        animation:fadeInDown 0.8s ease;
+    }}
+    .dash-logo{{
+        font-size:2.6rem;
+        margin-bottom:8px;
+        display:inline-block;
+        animation:float 4s ease-in-out infinite;
+        filter:drop-shadow(0 0 20px {a1}88);
+    }}
+    .dash-title{{
+        font-size:2.6rem;
+        font-weight:800;
+        letter-spacing:-0.03em;
+        background:{th("title_gradient")};
+        background-size:300% auto;
+        -webkit-background-clip:text;
+        -webkit-text-fill-color:transparent;
+        animation:shimmer 5s linear infinite;
+        line-height:1.1;
+    }}
+    .dash-subtitle{{
+        color:{th("text_muted")};
+        font-size:0.88rem;
+        margin-top:6px;
+        letter-spacing:0.04em;
+        font-weight:400;
+    }}
+    .dash-tagline{{
+        display:inline-flex;
+        align-items:center;
+        gap:6px;
+        margin-top:10px;
+        padding:4px 14px;
+        border:1px solid {a1}33;
+        border-radius:20px;
+        font-size:0.75rem;
+        color:{th("text_muted")};
+        background:{a1_rgba};
+        letter-spacing:0.06em;
+        font-weight:500;
+    }}
+
+    /* ── Metrics ── */
+    [data-testid="stMetric"]{{
+        background:{th("card_bg")}!important;
+        border:1px solid {border_val}!important;
+        border-radius:16px!important;
+        padding:20px 22px!important;
+        animation:cardEntrance 0.5s ease;
+        transition:all 0.25s ease!important;
+        position:relative;
+        overflow:hidden;
+    }}
+    [data-testid="stMetric"]::before{{
+        content:'';
+        position:absolute;
+        top:0;left:0;right:0;
+        height:2px;
+        background:{th("metric_gradient")};
+        border-radius:16px 16px 0 0;
+    }}
+    [data-testid="stMetric"]:hover{{transform:translateY(-4px);box-shadow:0 12px 40px {a1_rgba_btn}!important;}}
+    [data-testid="stMetricLabel"]{{color:{th("text_muted")}!important;font-size:0.78rem!important;font-weight:600!important;letter-spacing:0.04em!important;text-transform:uppercase!important;}}
+    [data-testid="stMetricValue"]{{font-size:1.8rem!important;font-weight:800!important;background:{th("metric_gradient")};-webkit-background-clip:text;-webkit-text-fill-color:transparent;letter-spacing:-0.02em;}}
+
+    /* ── Tabs ── */
+    .stTabs [data-baseweb="tab-list"]{{
+        background:{th("card_bg")};
+        border-radius:14px;
+        padding:5px;
+        gap:4px;
+        border:1px solid {border_val};
+    }}
+    .stTabs [data-baseweb="tab"]{{
+        color:{th("text_muted")}!important;
+        border-radius:10px!important;
+        font-size:0.82rem!important;
+        font-weight:600!important;
+        padding:9px 18px!important;
+        transition:all 0.2s ease!important;
+        letter-spacing:0.02em!important;
+    }}
+    .stTabs [aria-selected="true"]{{
+        background:{tab_active}!important;
+        color:white!important;
+        box-shadow:0 4px 16px {a1_rgba_btn}!important;
+    }}
+
+    /* ── Banners ── */
+    .info-banner{{background:{hex_to_rgba(a1,0.08)};border-left:3px solid {a1};border-radius:10px;padding:12px 16px;margin:8px 0 16px;font-size:0.84rem;color:{th("text")}!important;}}
+    .warn-banner{{background:{hex_to_rgba(warning_color,0.08)};border-left:3px solid {warning_color};border-radius:10px;padding:12px 16px;margin:8px 0 16px;font-size:0.84rem;color:{th("text")}!important;}}
+    .alert-banner{{background:{hex_to_rgba(danger_color,0.08)};border-left:3px solid {danger_color};border-radius:10px;padding:12px 16px;margin:8px 0 16px;font-size:0.84rem;color:{th("text")}!important;}}
+    .ok-banner{{background:{hex_to_rgba(success_color,0.08)};border-left:3px solid {success_color};border-radius:10px;padding:12px 16px;margin:8px 0 16px;font-size:0.84rem;color:{th("text")}!important;}}
+
+    /* ── Cards ── */
+    .exec-card{{
+        background:{th("card_bg")};
+        border:1px solid {border_val};
+        border-radius:16px;
+        padding:20px 24px;
+        font-size:0.875rem;
+        color:{th("text")}!important;
+        line-height:2;
+        animation:cardEntrance 0.5s ease;
+        box-shadow:0 4px 24px rgba(0,0,0,0.3);
+        backdrop-filter:blur(10px);
+    }}
     .exec-card b,.exec-card strong{{color:{th("text_label")}!important;}}
-    .badge-ok{{background:linear-gradient(90deg,#065f46,#047857);color:#d1fae5!important;border-radius:20px;padding:3px 12px;font-size:0.76rem;font-weight:700;display:inline-block;}}
-    .badge-off{{background:linear-gradient(90deg,#991b1b,#b91c1c);color:#fee2e2!important;border-radius:20px;padding:3px 12px;font-size:0.76rem;font-weight:700;display:inline-block;}}
-    .badge-warn{{background:linear-gradient(90deg,#92400e,#b45309);color:#fef3c7!important;border-radius:20px;padding:3px 12px;font-size:0.76rem;font-weight:700;display:inline-block;}}
+
+    /* ── Badges ── */
+    .badge-ok{{background:linear-gradient(90deg,#065f46,#047857);color:#d1fae5!important;border-radius:20px;padding:3px 12px;font-size:0.72rem;font-weight:700;display:inline-block;letter-spacing:0.02em;}}
+    .badge-off{{background:linear-gradient(90deg,#991b1b,#b91c1c);color:#fee2e2!important;border-radius:20px;padding:3px 12px;font-size:0.72rem;font-weight:700;display:inline-block;}}
+    .badge-warn{{background:linear-gradient(90deg,#78350f,#92400e);color:#fef3c7!important;border-radius:20px;padding:3px 12px;font-size:0.72rem;font-weight:700;display:inline-block;}}
+
+    /* ── Typography ── */
     h1,h2,h3,h4,h5,h6{{color:{th("text")}!important;}}
     .stMarkdown p,.stMarkdown li{{color:{th("text_label")}!important;}}
     .stCaption,[data-testid="stCaptionContainer"] p{{color:{th("text_muted")}!important;}}
+
+    /* ── Expander ── */
     [data-testid="stExpander"]{{background:{th("card_bg")}!important;border:1px solid {border_val}!important;border-radius:12px!important;}}
-    [data-testid="stExpander"] summary,[data-testid="stExpander"] summary p{{color:{th("text_label")}!important;}}
-    hr{{border:none!important;height:1px!important;background:linear-gradient(90deg,transparent,{a1}66,transparent)!important;margin:16px 0!important;}}
-    ::-webkit-scrollbar{{width:6px;height:6px;}}
-    ::-webkit-scrollbar-track{{background:{card_bg_solid};}}
-    ::-webkit-scrollbar-thumb{{background:{tab_active};border-radius:10px;}}
-    footer{{visibility:hidden;}}
-    [data-baseweb="select"] div{{background:{th("input_bg")}!important;color:{th("text")}!important;border-color:{a1}55!important;}}
+    [data-testid="stExpander"] summary,[data-testid="stExpander"] summary p{{color:{th("text_label")}!important;font-weight:600!important;}}
+
+    /* ── Divider ── */
+    hr{{border:none!important;height:1px!important;background:linear-gradient(90deg,transparent,{a1}44,transparent)!important;margin:20px 0!important;}}
+
+    /* ── Scrollbar ── */
+    ::-webkit-scrollbar{{width:5px;height:5px;}}
+    ::-webkit-scrollbar-track{{background:transparent;}}
+    ::-webkit-scrollbar-thumb{{background:{a1}55;border-radius:10px;}}
+    ::-webkit-scrollbar-thumb:hover{{background:{a1}99;}}
+
+    /* ── Select ── */
+    [data-baseweb="select"] div{{background:{th("input_bg")}!important;color:{th("text")}!important;border-color:{a1}44!important;}}
     [data-baseweb="select"] li{{background:{card_bg_solid}!important;color:{th("text")}!important;}}
     .stRadio label,.stCheckbox label{{color:{th("text")}!important;}}
     div[data-testid="stRadio"] p{{color:{th("text")}!important;}}
-    .dataframe-wrap table{{font-family:'IBM Plex Sans Arabic',sans-serif;border-collapse:collapse;width:100%;background:{card_bg_solid};color:{th("text")};border-radius:12px;overflow:hidden;font-size:0.84rem;}}
-    .dataframe-wrap th{{background:{tab_active};color:white;padding:10px 14px;text-align:center;font-weight:600;white-space:nowrap;}}
-    .dataframe-wrap td{{padding:8px 14px;text-align:center;border-bottom:1px solid {border_val};white-space:nowrap;}}
-    .dataframe-wrap tr:hover{{background:{a1}11;}}
-    .kpi-tile{{background:{th("card_bg")};border:1px solid {border_val};border-radius:16px;padding:22px;text-align:center;animation:cardEntrance 0.6s ease;transition:all 0.3s;backdrop-filter:blur(10px);}}
-    .kpi-tile:hover{{transform:translateY(-6px);box-shadow:0 12px 40px {a1}44;}}
-    .kpi-tile .kpi-value{{font-size:2rem;font-weight:700;background:{th("metric_gradient")};-webkit-background-clip:text;-webkit-text-fill-color:transparent;}}
-    .kpi-tile .kpi-label{{font-size:0.8rem;color:{th("text_muted")};margin-top:6px;}}
-    .kpi-tile .kpi-icon{{font-size:2rem;margin-bottom:10px;}}
-    .section-header{{font-size:1.05rem;font-weight:700;color:{th("text_label")};margin:20px 0 12px;display:flex;align-items:center;gap:8px;padding-bottom:8px;border-bottom:1px solid {border_val};}}
-    .pagination-bar{{display:flex;align-items:center;justify-content:center;gap:12px;padding:12px 0;margin-top:8px;}}
-    .page-info{{color:{th("text_muted")};font-size:0.84rem;background:{th("card_bg")};padding:6px 16px;border-radius:20px;border:1px solid {border_val};}}
-    .login-orb{{width:100px;height:100px;border-radius:50%;background:{th("button_gradient")};display:flex;align-items:center;justify-content:center;font-size:2.5rem;margin:0 auto 20px;animation:float 3s ease-in-out infinite;box-shadow:0 8px 40px {a1}66;}}
-    .login-card{{background:{th("card_bg")};border:1px solid {border_val};border-radius:20px;padding:32px 36px;animation:fadeInUp 0.7s ease;backdrop-filter:blur(20px);}}
-    .login-title{{font-size:2.2rem;font-weight:700;background:{th("title_gradient")};background-size:200% auto;-webkit-background-clip:text;-webkit-text-fill-color:transparent;animation:shimmer 3s linear infinite;text-align:center;margin-bottom:6px;}}
-    .login-subtitle{{color:{th("text_label")}!important;font-size:0.9rem;text-align:center;margin-bottom:28px;}}
-    .chat-panel{{background:{th("card_bg")};border:1px solid {border_val};border-radius:20px;overflow:hidden;backdrop-filter:blur(20px);}}
-    .chat-header{{background:{tab_active};padding:14px 20px;}}
-    .chat-msg-user{{background:{th("button_gradient")};color:white;border-radius:18px 18px 4px 18px;padding:10px 14px;margin:6px 0 6px 40px;font-size:0.86rem;}}
-    .chat-msg-bot{{background:{th("card_bg")};color:{th("text")};border:1px solid {border_val};border-radius:18px 18px 18px 4px;padding:10px 14px;margin:6px 40px 6px 0;font-size:0.86rem;}}
-    .chat-label-user{{text-align:right;font-size:0.7rem;color:{th("text_muted")};margin-bottom:2px;}}
-    .chat-label-bot{{text-align:left;font-size:0.7rem;color:{th("text_muted")};margin-bottom:2px;}}
-    .chat-insight-block{{background:{a1}18;border:1px solid {a1}44;border-radius:10px;padding:10px 14px;margin:6px 0;font-size:0.83rem;}}
-    .chat-insight-row{{display:flex;justify-content:space-between;padding:3px 0;border-bottom:1px solid {border_val};}}
+
+    /* ── Table ── */
+    .dataframe-wrap table{{
+        font-family:'Inter',sans-serif;
+        border-collapse:collapse;
+        width:100%;
+        background:{card_bg_solid};
+        color:{th("text")};
+        border-radius:14px;
+        overflow:hidden;
+        font-size:0.82rem;
+        border:1px solid {border_val};
+    }}
+    .dataframe-wrap th{{
+        background:{tab_active};
+        color:white;
+        padding:11px 16px;
+        text-align:center;
+        font-weight:700;
+        white-space:nowrap;
+        font-size:0.78rem;
+        letter-spacing:0.04em;
+        text-transform:uppercase;
+    }}
+    .dataframe-wrap td{{padding:10px 16px;text-align:center;border-bottom:1px solid {border_val};white-space:nowrap;}}
+    .dataframe-wrap tr:hover td{{background:{hex_to_rgba(a1,0.06)};}}
+
+    /* ── KPI Tiles ── */
+    .kpi-tile{{
+        background:{th("card_bg")};
+        border:1px solid {border_val};
+        border-radius:18px;
+        padding:24px 20px;
+        text-align:center;
+        animation:cardEntrance 0.5s ease;
+        transition:all 0.3s ease;
+        backdrop-filter:blur(10px);
+        position:relative;
+        overflow:hidden;
+    }}
+    .kpi-tile::after{{
+        content:'';
+        position:absolute;
+        bottom:0;left:0;right:0;
+        height:2px;
+        background:{th("metric_gradient")};
+    }}
+    .kpi-tile:hover{{transform:translateY(-8px);box-shadow:0 20px 50px {a1_rgba_btn};}}
+    .kpi-tile .kpi-value{{font-size:2.1rem;font-weight:800;background:{th("metric_gradient")};-webkit-background-clip:text;-webkit-text-fill-color:transparent;letter-spacing:-0.03em;}}
+    .kpi-tile .kpi-label{{font-size:0.76rem;color:{th("text_muted")};margin-top:8px;font-weight:600;letter-spacing:0.04em;text-transform:uppercase;}}
+    .kpi-tile .kpi-icon{{font-size:2.2rem;margin-bottom:12px;filter:drop-shadow(0 4px 8px {a1}66);}}
+
+    /* ── Section Headers ── */
+    .section-header{{
+        font-size:0.95rem;
+        font-weight:700;
+        color:{th("text_label")};
+        margin:24px 0 14px;
+        display:flex;
+        align-items:center;
+        gap:10px;
+        padding-bottom:10px;
+        border-bottom:1px solid {border_val};
+        letter-spacing:0.02em;
+    }}
+
+    /* ── Pagination ── */
+    .pagination-bar{{display:flex;align-items:center;justify-content:center;gap:12px;padding:14px 0;margin-top:6px;}}
+    .page-info{{color:{th("text_muted")};font-size:0.8rem;background:{th("card_bg")};padding:6px 18px;border-radius:20px;border:1px solid {border_val};font-weight:600;}}
+
+    /* ── Login ── */
+    .login-orb{{
+        width:90px;height:90px;border-radius:50%;
+        background:{th("button_gradient")};
+        display:flex;align-items:center;justify-content:center;
+        font-size:2.4rem;margin:0 auto 20px;
+        animation:float 3s ease-in-out infinite;
+        box-shadow:0 12px 50px {a1_rgba_btn};
+    }}
+    .login-card{{
+        background:{th("card_bg")};
+        border:1px solid {border_val};
+        border-radius:22px;
+        padding:36px 40px;
+        animation:fadeInUp 0.7s ease;
+        backdrop-filter:blur(30px);
+        box-shadow:0 24px 80px rgba(0,0,0,0.4);
+    }}
+    .login-title{{
+        font-size:2rem;font-weight:800;letter-spacing:-0.03em;
+        background:{th("title_gradient")};background-size:200% auto;
+        -webkit-background-clip:text;-webkit-text-fill-color:transparent;
+        animation:shimmer 4s linear infinite;text-align:center;margin-bottom:6px;
+    }}
+    .login-subtitle{{color:{th("text_label")}!important;font-size:0.85rem;text-align:center;margin-bottom:28px;font-weight:400;letter-spacing:0.02em;}}
+
+    /* ── Chat ── */
+    .chat-msg-user{{background:{th("button_gradient")};color:white;border-radius:16px 16px 4px 16px;padding:10px 16px;margin:6px 0 6px 50px;font-size:0.85rem;line-height:1.6;}}
+    .chat-msg-bot{{background:{th("card_bg")};color:{th("text")};border:1px solid {border_val};border-radius:16px 16px 16px 4px;padding:10px 16px;margin:6px 50px 6px 0;font-size:0.85rem;line-height:1.6;}}
+    .chat-label-user{{text-align:right;font-size:0.68rem;color:{th("text_muted")};margin-bottom:3px;font-weight:600;letter-spacing:0.04em;}}
+    .chat-label-bot{{text-align:left;font-size:0.68rem;color:{th("text_muted")};margin-bottom:3px;font-weight:600;letter-spacing:0.04em;}}
+    .chat-insight-block{{background:{hex_to_rgba(a1,0.08)};border:1px solid {a1}33;border-radius:12px;padding:12px 16px;margin:6px 0;font-size:0.82rem;}}
+    .chat-insight-row{{display:flex;justify-content:space-between;padding:5px 0;border-bottom:1px solid {border_val};}}
     .chat-insight-row:last-child{{border-bottom:none;}}
-    .chat-insight-key{{color:{th("text_muted")};}}
-    .chat-insight-val{{color:{th("text_label")};font-weight:700;}}
+    .chat-insight-key{{color:{th("text_muted")};font-size:0.8rem;}}
+    .chat-insight-val{{color:{th("text_label")};font-weight:700;font-size:0.85rem;}}
+
+    /* ── Sidebar brand ── */
+    .sidebar-brand{{
+        background:{th("card_bg")};
+        border:1px solid {border_val};
+        border-radius:16px;
+        padding:16px;
+        margin-bottom:18px;
+        text-align:center;
+    }}
+    .sidebar-brand-icon{{font-size:2rem;margin-bottom:4px;filter:drop-shadow(0 4px 12px {a1}88);}}
+    .sidebar-brand-name{{font-size:0.8rem;font-weight:700;color:{th("text")};letter-spacing:0.06em;text-transform:uppercase;}}
+    .sidebar-brand-user{{font-size:0.68rem;color:{th("text_muted")};margin-top:2px;}}
+
+    footer{{visibility:hidden;}}
     </style>
     """
 
@@ -249,28 +541,12 @@ VIZ_MODES = [
 ]
 
 RAW_COLS = {
-    "system": "System",
-    "model_code": "Model Code",
-    "product": "Product",
-    "sale_price": "Sale Price",
-    "on_hand": "On Hand",
-    "purchase_qty_col": "Purchase Qty",
-    "branch": "Branch",
-    "location": "Location",
-    "date": "Date",
-    "pos_order": "POS Order",
-    "customer": "Customer",
-    "cashier": "Cashier",
-    "category": "Category",
-    "qty": "Qty",
-    "unit_price": "Unit Price",
-    "subtotal": "Subtotal",
-    "total_amount": "Total Amount",
-    "so": "SO",
-    "vendor": "Vendor",
-    "receipt_location": "Receipt Location",
-    "po": "PO",
-    "state": "State",
+    "system": "System", "model_code": "Model Code", "product": "Product",
+    "sale_price": "Sale Price", "on_hand": "On Hand", "purchase_qty_col": "Purchase Qty",
+    "branch": "Branch", "location": "Location", "date": "Date", "pos_order": "POS Order",
+    "customer": "Customer", "cashier": "Cashier", "category": "Category", "qty": "Qty",
+    "unit_price": "Unit Price", "subtotal": "Subtotal", "total_amount": "Total Amount",
+    "so": "SO", "vendor": "Vendor", "receipt_location": "Receipt Location", "po": "PO", "state": "State",
 }
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -283,31 +559,19 @@ def t(en, ar):
     return ar if get_lang() == "AR" else en
 
 _COL_MAP = {
-    "System": ("System", "النظام"),
-    "Model Code": ("Model Code", "رمز الموديل"),
-    "Product": ("Product", "المنتج"),
-    "Sale Price": ("Sale Price", "سعر البيع"),
-    "On Hand": ("On Hand", "متوفر"),
-    "Purchase Qty": ("Purchase Qty", "كمية الشراء"),
-    "Branch": ("Branch", "الفرع"),
-    "Location": ("Location", "الموقع"),
-    "Date": ("Date", "التاريخ"),
-    "POS Order": ("POS Order", "طلب نقطة بيع"),
-    "Customer": ("Customer", "العميل"),
-    "Cashier": ("Cashier", "الكاشير"),
-    "Category": ("Category", "الفئة"),
-    "Qty": ("Qty", "الكمية"),
-    "Unit Price": ("Unit Price", "سعر الوحدة"),
-    "Subtotal": ("Subtotal", "المجموع الفرعي"),
-    "Total Amount": ("Total Amount", "المبلغ الإجمالي"),
-    "SO": ("SO", "أمر بيع"),
-    "Vendor": ("Vendor", "المورد"),
-    "Receipt Location": ("Receipt Location", "موقع الاستلام"),
-    "PO": ("PO", "أمر شراء"),
-    "State": ("State", "الحالة"),
+    "System": ("System", "النظام"), "Model Code": ("Model Code", "رمز الموديل"),
+    "Product": ("Product", "المنتج"), "Sale Price": ("Sale Price", "سعر البيع"),
+    "On Hand": ("On Hand", "متوفر"), "Purchase Qty": ("Purchase Qty", "كمية الشراء"),
+    "Branch": ("Branch", "الفرع"), "Location": ("Location", "الموقع"),
+    "Date": ("Date", "التاريخ"), "POS Order": ("POS Order", "طلب نقطة بيع"),
+    "Customer": ("Customer", "العميل"), "Cashier": ("Cashier", "الكاشير"),
+    "Category": ("Category", "الفئة"), "Qty": ("Qty", "الكمية"),
+    "Unit Price": ("Unit Price", "سعر الوحدة"), "Subtotal": ("Subtotal", "المجموع الفرعي"),
+    "Total Amount": ("Total Amount", "المبلغ الإجمالي"), "SO": ("SO", "أمر بيع"),
+    "Vendor": ("Vendor", "المورد"), "Receipt Location": ("Receipt Location", "موقع الاستلام"),
+    "PO": ("PO", "أمر شراء"), "State": ("State", "الحالة"),
     "Revenue (SAR)": ("Revenue (SAR)", "الإيرادات (ر.س)"),
-    "Bills": ("Bills", "الفواتير"),
-    "Orders": ("Orders", "الطلبات"),
+    "Bills": ("Bills", "الفواتير"), "Orders": ("Orders", "الطلبات"),
     "Spend (SAR)": ("Spend (SAR)", "الإنفاق (ر.س)"),
 }
 
@@ -336,40 +600,19 @@ def get_system_name(key: str) -> str:
 # SECTION 5: SESSION STATE DEFAULTS
 # ─────────────────────────────────────────────────────────────────────────────
 _DEFAULTS = {
-    "authenticated": False,
-    "user_email": "",
-    "lang": "EN",
-    "theme": "Dark Executive",
-    "inventory_df": None,
-    "inventory_branch_df": None,
-    "pos_df": None,
-    "sales_df": None,
-    "purchase_df": None,
-    "inv_diag": [],
-    "pos_diag": [],
-    "sales_diag": [],
-    "pur_diag": [],
-    "inv_last_refresh": None,
-    "pos_last_refresh": None,
-    "sales_last_refresh": None,
-    "pur_last_refresh": None,
-    "inv_viz_mode": "📋 List View",
-    "pos_viz_mode": "📋 List View",
-    "sales_viz_mode": "📋 List View",
-    "pur_viz_mode": "📋 List View",
-    "inv_page": 0,
-    "inv_full_page": 0,
-    "pos_page": 0,
-    "pos_branch_page": 0,
-    "pos_cashier_page": 0,
-    "sales_page": 0,
-    "sales_cust_page": 0,
-    "pur_page": 0,
-    "pur_vendor_page": 0,
-    "chat_history": [],
-    "login_error": "",
+    "authenticated": False, "user_email": "", "lang": "EN",
+    "theme": "Midnight Executive",
+    "inventory_df": None, "inventory_branch_df": None, "pos_df": None,
+    "sales_df": None, "purchase_df": None,
+    "inv_diag": [], "pos_diag": [], "sales_diag": [], "pur_diag": [],
+    "inv_last_refresh": None, "pos_last_refresh": None,
+    "sales_last_refresh": None, "pur_last_refresh": None,
+    "inv_viz_mode": "📋 List View", "pos_viz_mode": "📋 List View",
+    "sales_viz_mode": "📋 List View", "pur_viz_mode": "📋 List View",
+    "inv_page": 0, "inv_full_page": 0, "pos_page": 0, "pos_branch_page": 0,
+    "pos_cashier_page": 0, "sales_page": 0, "sales_cust_page": 0,
+    "pur_page": 0, "pur_vendor_page": 0, "chat_history": [], "login_error": "",
 }
-
 for _k, _v in _DEFAULTS.items():
     if _k not in st.session_state:
         st.session_state[_k] = _v
@@ -409,13 +652,13 @@ def attempt_login(email: str, password: str) -> tuple:
         if cfg and cfg.get("url") and cfg.get("db"):
             login_candidates.append((key, cfg))
     if not login_candidates:
-        return False, t("No Odoo connection configured in secrets. Contact administrator.", "لا يوجد اتصال Odoo مُكوَّن. تواصل مع المسؤول.")
+        return False, t("No Odoo connection configured in secrets.", "لا يوجد اتصال Odoo مُكوَّن.")
     last_error = ""
     for source_key, cfg in login_candidates:
         url = cfg.get("url", "").rstrip("/")
         db = cfg.get("db", "")
         if not url or not db:
-            last_error = f"[{source_key}] Missing url or db in secrets."
+            last_error = f"[{source_key}] Missing url or db."
             continue
         try:
             proxy = xmlrpc.client.ServerProxy(f"{url}/xmlrpc/2/common", allow_none=True)
@@ -423,7 +666,7 @@ def attempt_login(email: str, password: str) -> tuple:
             if uid and isinstance(uid, int) and uid > 0:
                 return True, ""
             else:
-                last_error = t(f"Login failed for {email} on {db}. Wrong credentials.", f"فشل تسجيل الدخول لـ {email} على {db}. بيانات خاطئة.")
+                last_error = t(f"Login failed for {email} on {db}.", f"فشل تسجيل الدخول لـ {email} على {db}.")
         except xmlrpc.client.Fault as e:
             last_error = f"[{source_key}] Odoo error: {e.faultString}"
         except ConnectionRefusedError:
@@ -431,7 +674,7 @@ def attempt_login(email: str, password: str) -> tuple:
         except OSError as e:
             last_error = f"[{source_key}] Network error: {e}"
         except Exception as e:
-            last_error = f"[{source_key}] Unexpected error: {type(e).__name__}: {e}"
+            last_error = f"[{source_key}] Error: {type(e).__name__}: {e}"
     return False, last_error
 
 def do_logout():
@@ -458,27 +701,27 @@ def _odoo_auth(url: str, db: str, user: str, api_key: str):
     except Exception:
         return None
 
-def _odoo_call(url: str, db: str, uid: int, api_key: str, model: str, method: str, domain: list, kwargs: dict):
+def _odoo_call(url, db, uid, api_key, model, method, domain, kwargs):
     return _get_proxy(url, "object").execute_kw(db, uid, api_key, model, method, domain, kwargs)
 
 def _get_system_conn(key: str) -> tuple:
     cfg = st.secrets.get(key)
     if not cfg:
-        return None, None, None, None, key, f"[{key}] Not configured in secrets."
+        return None, None, None, None, key, f"[{key}] Not configured."
     url = cfg.get("url", "").rstrip("/")
     db = cfg.get("db", "")
     user = cfg.get("user", "")
     api_key = cfg.get("api_key", "")
     name = get_system_name(key)
     if not url:
-        return None, None, None, None, name, f"[{key}] Missing 'url' in secrets."
+        return None, None, None, None, name, f"[{key}] Missing 'url'."
     if not db:
-        return None, None, None, None, name, f"[{key}] Missing 'db' in secrets."
+        return None, None, None, None, name, f"[{key}] Missing 'db'."
     if not user or not api_key:
-        return None, None, None, None, name, f"[{key}] Missing 'user' or 'api_key' in secrets."
+        return None, None, None, None, name, f"[{key}] Missing 'user' or 'api_key'."
     uid = _odoo_auth(url, db, user, api_key)
     if not uid:
-        return url, db, None, api_key, name, f"[{key}] Auth failed — bad user/api_key or wrong DB '{db}'."
+        return url, db, None, api_key, name, f"[{key}] Auth failed."
     return url, db, uid, api_key, name, None
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -586,7 +829,9 @@ def render_paginated_table(df: pd.DataFrame, page_key: str, rows_per_page: int =
         unsafe_allow_html=True,
     )
     st.markdown(
-        f"<div class='pagination-bar'><span class='page-info'>{t('Showing','عرض')} {start+1}–{end} {t('of','من')} {total_rows} | {t('Page','صفحة')} {current+1}/{total_pages}</span></div>",
+        f"<div class='pagination-bar'><span class='page-info'>"
+        f"{t('Showing','عرض')} {start+1}–{end} {t('of','من')} {total_rows} &nbsp;|&nbsp; "
+        f"{t('Page','صفحة')} {current+1}/{total_pages}</span></div>",
         unsafe_allow_html=True,
     )
     c1, c2, _, c4, c5 = st.columns([1, 1, 2, 1, 1])
@@ -609,15 +854,17 @@ def render_paginated_table(df: pd.DataFrame, page_key: str, rows_per_page: int =
 def apply_plotly_theme(fig):
     if fig is None:
         return fig
+    a1 = th_color("accent1")
     fig.update_layout(
         paper_bgcolor="rgba(0,0,0,0)",
         plot_bgcolor="rgba(0,0,0,0)",
-        font=dict(color=th("text"), family="IBM Plex Sans Arabic, Space Grotesk"),
+        font=dict(color=th("text"), family="Inter, IBM Plex Sans Arabic", size=12),
         margin=dict(l=20, r=20, t=50, b=30),
-        legend=dict(bgcolor="rgba(0,0,0,0)", bordercolor=th("border")),
+        legend=dict(bgcolor="rgba(0,0,0,0)", bordercolor=th("border"), font=dict(size=11)),
+        title_font=dict(size=14, color=th("text_label"), family="Inter"),
     )
-    fig.update_xaxes(gridcolor=th("border"), linecolor=th("border"))
-    fig.update_yaxes(gridcolor=th("border"), linecolor=th("border"))
+    fig.update_xaxes(gridcolor=th("border"), linecolor=th("border"), tickfont=dict(size=11))
+    fig.update_yaxes(gridcolor=th("border"), linecolor=th("border"), tickfont=dict(size=11))
     return fig
 
 def render_visualization(df: pd.DataFrame, viz_mode: str, x_raw: str, y_raw: str, label: str = "", color_raw: str = None):
@@ -627,15 +874,16 @@ def render_visualization(df: pd.DataFrame, viz_mode: str, x_raw: str, y_raw: str
     x_col = get_display_col(df, x_raw)
     y_col = get_display_col(df, y_raw)
     if x_col not in df.columns:
-        st.warning(f"⚠️ {t('Column not found','العمود غير موجود')}: {x_raw} / {col(x_raw)}")
+        st.warning(f"⚠️ {t('Column not found','العمود غير موجود')}: {x_raw}")
         return
     if y_col not in df.columns:
-        st.warning(f"⚠️ {t('Column not found','العمود غير موجود')}: {y_raw} / {col(y_raw)}")
+        st.warning(f"⚠️ {t('Column not found','العمود غير موجود')}: {y_raw}")
         return
     colors = th("plotly_colors")
     tmpl = th("plotly_template")
     a1 = th_color("accent1")
     a2 = th_color("accent2")
+    a1_fill = hex_to_rgba(a1, 0.2)
     df_plot = df.copy()
     df_plot[y_col] = pd.to_numeric(df_plot[y_col], errors="coerce").fillna(0)
     x_label = col(x_raw)
@@ -664,20 +912,22 @@ def render_visualization(df: pd.DataFrame, viz_mode: str, x_raw: str, y_raw: str
         fig = px.bar(df_agg.head(20), x=x_col, y=y_col, title=label, color=y_col,
                      color_continuous_scale=[a1, a2], template=tmpl, text_auto=".2s",
                      labels={x_col: x_label, y_col: y_label})
+        fig.update_traces(marker_line_width=0)
     elif viz_mode == "📉 Horizontal Bar":
         fig = px.bar(df_agg.head(15), x=y_col, y=x_col, orientation="h", title=label, color=y_col,
                      color_continuous_scale=[a1, a2], template=tmpl, text_auto=".2s",
                      labels={x_col: x_label, y_col: y_label})
         fig.update_layout(yaxis=dict(categoryorder="total ascending"))
+        fig.update_traces(marker_line_width=0)
     elif viz_mode == "📈 Line Chart":
         fig = px.line(df_agg.head(30), x=x_col, y=y_col, title=label, markers=True,
                       template=tmpl, color_discrete_sequence=[a1],
                       labels={x_col: x_label, y_col: y_label})
-        fig.update_traces(line_width=3, marker_size=8, line_color=a1, marker_color=a2)
+        fig.update_traces(line_width=2.5, marker_size=7, line_color=a1, marker_color=a2)
     elif viz_mode == "📉 Area Chart":
         fig = px.area(df_agg.head(30), x=x_col, y=y_col, title=label, template=tmpl,
                       color_discrete_sequence=[a1], labels={x_col: x_label, y_col: y_label})
-        fig.update_traces(fillcolor=a1 + "33", line_color=a1, line_width=2.5)
+        fig.update_traces(fillcolor=a1_fill, line_color=a1, line_width=2.5)
     elif viz_mode == "🍕 Pie Chart":
         top_n = df_agg.head(10)
         fig = px.pie(top_n, names=x_col, values=y_col, title=label,
@@ -685,17 +935,12 @@ def render_visualization(df: pd.DataFrame, viz_mode: str, x_raw: str, y_raw: str
         fig.update_traces(textposition="inside", textinfo="percent+label")
     elif viz_mode == "🍩 Donut Chart":
         top_n = df_agg.head(10)
-        fig = px.pie(top_n, names=x_col, values=y_col, hole=0.55, title=label,
+        fig = px.pie(top_n, names=x_col, values=y_col, hole=0.58, title=label,
                      color_discrete_sequence=colors, template=tmpl)
         fig.update_traces(textposition="inside", textinfo="percent+label")
     elif viz_mode == "📊 Stacked Column":
         sys_col = get_display_col(df_plot, "System")
-        if color_raw:
-            stack_by = get_display_col(df_plot, color_raw)
-        elif sys_col in df_plot.columns:
-            stack_by = sys_col
-        else:
-            stack_by = None
+        stack_by = get_display_col(df_plot, color_raw) if color_raw else (sys_col if sys_col in df_plot.columns else None)
         if stack_by and stack_by in df_plot.columns:
             df_stack = df_plot.groupby([x_col, stack_by])[y_col].sum().reset_index()
             fig = px.bar(df_stack, x=x_col, y=y_col, color=stack_by, title=label,
@@ -712,10 +957,8 @@ def render_visualization(df: pd.DataFrame, viz_mode: str, x_raw: str, y_raw: str
     elif viz_mode == "🗂️ Funnel Chart":
         top_n = df_agg.head(10)
         fig = go.Figure(go.Funnel(
-            y=top_n[x_col].astype(str),
-            x=top_n[y_col],
-            textinfo="value+percent initial",
-            marker_color=colors[:len(top_n)],
+            y=top_n[x_col].astype(str), x=top_n[y_col],
+            textinfo="value+percent initial", marker_color=colors[:len(top_n)],
         ))
         fig.update_layout(title=label)
     elif viz_mode == "📡 Radar Chart":
@@ -726,19 +969,14 @@ def render_visualization(df: pd.DataFrame, viz_mode: str, x_raw: str, y_raw: str
             st.info(t("Radar chart needs ≥3 data points.", "مخطط الرادار يحتاج 3 نقاط على الأقل."))
             return
         fig = go.Figure(go.Scatterpolar(
-            r=vals + [vals[0]],
-            theta=cats + [cats[0]],
-            fill="toself",
-            fillcolor=a1 + "33",
-            line_color=a1,
-            line_width=2,
+            r=vals + [vals[0]], theta=cats + [cats[0]],
+            fill="toself", fillcolor=a1_fill, line_color=a1, line_width=2,
         ))
         fig.update_layout(
             polar=dict(
                 radialaxis=dict(visible=True, gridcolor=th("border")),
                 angularaxis=dict(gridcolor=th("border")),
-            ),
-            title=label,
+            ), title=label,
         )
     else:
         fig = px.bar(df_agg.head(20), x=x_col, y=y_col, title=label, template=tmpl,
@@ -754,16 +992,17 @@ def viz_mode_selector(state_key: str) -> str:
     )
 
 def render_daily_trend_chart(df: pd.DataFrame, date_raw: str, value_raw: str, title: str, color_key: str = "accent1"):
+    """Render a daily area trend chart — fillcolor uses safe rgba() format."""
     if df is None or df.empty:
         st.markdown(f"<div class='info-banner'>ℹ️ {t('No data for trend chart.','لا توجد بيانات لمخطط الاتجاه.')}</div>", unsafe_allow_html=True)
         return
     date_c = get_display_col(df, date_raw)
     value_c = get_display_col(df, value_raw)
     if date_c not in df.columns:
-        st.warning(f"⚠️ {t('Date column missing for trend chart.','عمود التاريخ غير موجود لمخطط الاتجاه.')}")
+        st.warning(f"⚠️ {t('Date column missing.','عمود التاريخ غير موجود.')}")
         return
     if value_c not in df.columns:
-        st.warning(f"⚠️ {t('Value column missing for trend chart.','عمود القيمة غير موجود لمخطط الاتجاه.')}")
+        st.warning(f"⚠️ {t('Value column missing.','عمود القيمة غير موجود.')}")
         return
     daily = df.copy()
     daily[date_c] = pd.to_datetime(daily[date_c], errors="coerce").dt.date
@@ -771,16 +1010,24 @@ def render_daily_trend_chart(df: pd.DataFrame, date_raw: str, value_raw: str, ti
     daily[value_c] = pd.to_numeric(daily[value_c], errors="coerce").fillna(0)
     trend = daily.groupby(date_c)[value_c].sum().reset_index().sort_values(date_c)
     if trend.empty:
-        st.markdown(f"<div class='info-banner'>ℹ️ {t('No date data for trend.','لا توجد بيانات تواريخ للاتجاه.')}</div>", unsafe_allow_html=True)
+        st.markdown(f"<div class='info-banner'>ℹ️ {t('No date data for trend.','لا توجد بيانات تواريخ.')}</div>", unsafe_allow_html=True)
         return
     a = th_color(color_key)
-    fig = px.area(trend, x=date_c, y=value_c, title=title,
-                  template=th("plotly_template"), color_discrete_sequence=[a],
-                  labels={date_c: col(date_raw), value_c: col(value_raw)})
-    fig.update_traces(fillcolor=a + "33", line_color=a, line_width=2.5)
+    a_fill = hex_to_rgba(a, 0.18)  # ← FIX: safe rgba() instead of hex+"33"
+    fig = px.area(
+        trend, x=date_c, y=value_c, title=title,
+        template=th("plotly_template"),
+        color_discrete_sequence=[a],
+        labels={date_c: col(date_raw), value_c: col(value_raw)},
+    )
+    fig.update_traces(
+        fillcolor=a_fill,   # ← FIX: rgba() string, Plotly-safe
+        line_color=a,
+        line_width=2.5,
+    )
     st.plotly_chart(apply_plotly_theme(fig), use_container_width=True)
 
-def render_exec_summary(df: pd.DataFrame, value_raw: str, label_raw: str, section_title: str, top_n: int = 5, bottom_n: int = 3):
+def render_exec_summary(df, value_raw, label_raw, section_title, top_n=5, bottom_n=3):
     if df is None or df.empty:
         return
     value_c = get_display_col(df, value_raw)
@@ -795,15 +1042,16 @@ def render_exec_summary(df: pd.DataFrame, value_raw: str, label_raw: str, sectio
     medals = ["🥇", "🥈", "🥉", "4️⃣", "5️⃣"]
     border_v = th("border")
     a1_c = th_color("accent1")
-    danger_c = th_color("danger", "#f43f5e")
+    danger_c = th_color("danger", "#f87171")
     with c1:
         st.markdown(f"**🏆 {t('Top Performers','أفضل الأداء')}**")
         html = "<div class='exec-card'>"
         for i, (_, row) in enumerate(agg.head(top_n).iterrows()):
             m = medals[i] if i < len(medals) else f"{i+1}."
             html += (
-                f"<div style='display:flex;justify-content:space-between;padding:4px 0;border-bottom:1px solid {border_v};'>"
-                f"<span>{m} {str(row[label_c])[:28]}</span>"
+                f"<div style='display:flex;justify-content:space-between;padding:6px 0;"
+                f"border-bottom:1px solid {border_v};'>"
+                f"<span>{m} {str(row[label_c])[:30]}</span>"
                 f"<b style='color:{a1_c}'>{row[value_c]:,.0f}</b></div>"
             )
         st.markdown(html + "</div>", unsafe_allow_html=True)
@@ -813,8 +1061,9 @@ def render_exec_summary(df: pd.DataFrame, value_raw: str, label_raw: str, sectio
             html = "<div class='exec-card'>"
             for _, row in agg.tail(bottom_n).sort_values(value_c).iterrows():
                 html += (
-                    f"<div style='display:flex;justify-content:space-between;padding:4px 0;border-bottom:1px solid {border_v};'>"
-                    f"<span>⚠️ {str(row[label_c])[:28]}</span>"
+                    f"<div style='display:flex;justify-content:space-between;padding:6px 0;"
+                    f"border-bottom:1px solid {border_v};'>"
+                    f"<span>⚠️ {str(row[label_c])[:30]}</span>"
                     f"<b style='color:{danger_c}'>{row[value_c]:,.0f}</b></div>"
                 )
             st.markdown(html + "</div>", unsafe_allow_html=True)
@@ -827,7 +1076,7 @@ def show_diag(diag_list: list):
     if has_err:
         with st.expander(f"⚠️ {t('Load Diagnostics (errors found)','تشخيص التحميل (توجد أخطاء)')}"):
             for d in diag_list:
-                icon = "✅" if d.get("level") == "ok" else ("❌" if d.get("level") == "error" else "ℹ️")
+                icon = "✅" if d.get("level") == "ok" else "❌"
                 st.markdown(f"`{icon} [{d.get('system','')}] {d.get('msg','')}`")
     elif has_ok:
         with st.expander(f"✅ {t('Load Diagnostics (all OK)','تشخيص التحميل (كل شيء سليم)')}"):
@@ -940,7 +1189,7 @@ def _fetch_purchase_summary_one(key: str, model_codes_tuple: tuple, date_from: s
     except Exception:
         return pd.DataFrame()
 
-def fetch_purchase_summary(selected_keys: list, model_codes_tuple: tuple, date_from: str, date_to: str) -> pd.DataFrame:
+def fetch_purchase_summary(selected_keys, model_codes_tuple, date_from, date_to):
     results = []
     with ThreadPoolExecutor(max_workers=4) as ex:
         futs = [ex.submit(_fetch_purchase_summary_one, k, model_codes_tuple, date_from, date_to) for k in selected_keys]
@@ -1005,13 +1254,10 @@ def _fetch_purchase_one(key: str, model_filter: str, date_from: str, date_to: st
             partner = po.get("partner_id")
             vendor = partner[1] if isinstance(partner, list) and len(partner) > 1 else ""
             rows.append({
-                "System": name,
-                "Date": str(po.get("date_approve", ""))[:10],
-                "PO": po.get("name", ""),
-                "Vendor": vendor,
+                "System": name, "Date": str(po.get("date_approve", ""))[:10],
+                "PO": po.get("name", ""), "Vendor": vendor,
                 "Receipt Location": receipt_map.get(po.get("name", ""), ""),
-                "Category": category,
-                "Model Code": mc_val,
+                "Category": category, "Model Code": mc_val,
                 "Product": prod.get("name", ""),
                 "Qty": float(line.get("product_qty") or 0),
                 "Unit Price": float(line.get("price_unit") or 0),
@@ -1026,7 +1272,7 @@ def _fetch_purchase_one(key: str, model_filter: str, date_from: str, date_to: st
     except Exception as e:
         return _empty, {"system": name, "level": "error", "msg": f"{type(e).__name__}: {e}"}
 
-def fetch_purchase(selected_keys: list, model_filter: str, date_from: str, date_to: str):
+def fetch_purchase(selected_keys, model_filter, date_from, date_to):
     results, diag = [], []
     with ThreadPoolExecutor(max_workers=4) as ex:
         futs = {ex.submit(_fetch_purchase_one, k, model_filter, date_from, date_to): k for k in selected_keys}
@@ -1112,13 +1358,9 @@ def _fetch_pos_one(key: str, date_from: str, date_to: str, branch_filter: str, m
             user = order.get("user_id")
             cashier = user[1] if isinstance(user, list) and len(user) > 1 else ""
             rows.append({
-                "System": name,
-                "Date": str(order.get("date_order", ""))[:10],
-                "POS Order": order.get("name", ""),
-                "Branch": branch_name,
-                "Customer": customer,
-                "Cashier": cashier,
-                "Model Code": mc_val,
+                "System": name, "Date": str(order.get("date_order", ""))[:10],
+                "POS Order": order.get("name", ""), "Branch": branch_name,
+                "Customer": customer, "Cashier": cashier, "Model Code": mc_val,
                 "Product": prod.get("name", ""),
                 "Qty": float(line.get("qty") or 0),
                 "Unit Price": float(line.get("price_unit") or 0),
@@ -1134,7 +1376,7 @@ def _fetch_pos_one(key: str, date_from: str, date_to: str, branch_filter: str, m
     except Exception as e:
         return _empty, {"system": name, "level": "error", "msg": f"{type(e).__name__}: {e}"}
 
-def fetch_pos(selected_keys: list, date_from: str, date_to: str, branch_filter: str, model_filter: str):
+def fetch_pos(selected_keys, date_from, date_to, branch_filter, model_filter):
     results, diag = [], []
     with ThreadPoolExecutor(max_workers=4) as ex:
         futs = {ex.submit(_fetch_pos_one, k, date_from, date_to, branch_filter, model_filter): k for k in selected_keys}
@@ -1200,11 +1442,8 @@ def _fetch_sales_one(key: str, date_from: str, date_to: str, model_filter: str) 
             partner = order.get("partner_id")
             customer = partner[1] if isinstance(partner, list) and len(partner) > 1 else ""
             rows.append({
-                "System": name,
-                "Date": str(order.get("date_order", ""))[:10],
-                "SO": order.get("name", ""),
-                "Customer": customer,
-                "Model Code": mc_val,
+                "System": name, "Date": str(order.get("date_order", ""))[:10],
+                "SO": order.get("name", ""), "Customer": customer, "Model Code": mc_val,
                 "Product": prod.get("name", ""),
                 "Qty": float(line.get("product_uom_qty") or 0),
                 "Unit Price": float(line.get("price_unit") or 0),
@@ -1221,7 +1460,7 @@ def _fetch_sales_one(key: str, date_from: str, date_to: str, model_filter: str) 
     except Exception as e:
         return _empty, {"system": name, "level": "error", "msg": f"{type(e).__name__}: {e}"}
 
-def fetch_sales(selected_keys: list, date_from: str, date_to: str, model_filter: str):
+def fetch_sales(selected_keys, date_from, date_to, model_filter):
     results, diag = [], []
     with ThreadPoolExecutor(max_workers=4) as ex:
         futs = {ex.submit(_fetch_sales_one, k, date_from, date_to, model_filter): k for k in selected_keys}
@@ -1271,10 +1510,9 @@ def get_ai_response(user_msg: str) -> tuple:
             return pd.Series(dtype=float)
         return df.groupby(gc)[vc].sum().sort_values(ascending=False).head(n)
 
-    # Inventory queries
     if any(k in msg for k in ["inventory", "stock", "مخزون", "zero", "low stock", "top product", "fast", "slow"]):
         if inv_df is None or inv_df.empty:
-            return (t("📦 No inventory data loaded. Refresh the Inventory tab first.", "📦 لم يتم تحميل بيانات المخزون. يرجى تحديث تبويب المخزون أولاً."), None)
+            return (t("📦 No inventory data loaded.", "📦 لم يتم تحميل بيانات المخزون."), None)
         qty_s = safe_get_col(inv_df, "On Hand")
         price_s = safe_get_col(inv_df, "Sale Price")
         total_qty = int(qty_s.sum())
@@ -1290,31 +1528,30 @@ def get_ai_response(user_msg: str) -> tuple:
                 (t("Examples", "أمثلة"), ", ".join(str(x) for x in zero_mc[:4])),
                 (t("Action", "إجراء"), t("Urgent Reorder", "إعادة طلب عاجل")),
             ])
-            return (t(f"🔴 {zero_count} products have zero stock. Immediate reorder recommended.", f"🔴 {zero_count} منتج بدون مخزون. يُنصح بإعادة الطلب الفوري."), insight)
+            return (t(f"🔴 {zero_count} products have zero stock.", f"🔴 {zero_count} منتج بدون مخزون."), insight)
         if any(k in msg for k in ["low", "منخفض"]):
             insight = _insight_block([
-                (t("Low Stock (≤5)", "مخزون منخفض (≤5)"), str(low_count)),
-                (t("Zero Stock", "مخزون صفر"), str(zero_count)),
+                (t("Low Stock (≤5)", "مخزون منخفض"), str(low_count)),
+                (t("Zero Stock", "صفر مخزون"), str(zero_count)),
             ])
-            return (t(f"⚠️ {low_count} products low (≤5 units), {zero_count} out of stock.", f"⚠️ {low_count} منتج منخفض، {zero_count} بدون مخزون."), insight)
+            return (t(f"⚠️ {low_count} low stock, {zero_count} out of stock.", f"⚠️ {low_count} منخفض، {zero_count} صفر."), insight)
         if any(k in msg for k in ["top", "أعلى", "fast", "best"]):
             top = _top(inv_df, "Model Code", "On Hand")
             insight = _insight_block([(str(k), f"{int(v):,}") for k, v in top.items()])
-            return (t("🏆 Top models by stock qty:", "🏆 أعلى موديلات حسب الكمية:"), insight)
+            return (t("🏆 Top models by stock qty:", "🏆 أعلى موديلات:"), insight)
         risk = t("High Risk", "خطر عالٍ") if zero_count > 50 else (t("Moderate", "معتدل") if zero_count > 20 else t("Low Risk", "خطر منخفض"))
         insight = _insight_block([
             (t("Total Qty", "إجمالي الكمية"), f"{total_qty:,}"),
-            (t("Total Value (SAR)", "القيمة (ر.س)"), f"{total_value:,.0f}"),
+            (t("Total Value (SAR)", "القيمة"), f"{total_value:,.0f}"),
             (t("Models", "الموديلات"), f"{models:,}"),
             (t("Zero Stock", "صفر مخزون"), f"{zero_count:,}"),
-            (t("Low Stock (≤5)", "منخفض (≤5)"), f"{low_count:,}"),
+            (t("Low Stock (≤5)", "منخفض"), f"{low_count:,}"),
         ])
-        return (t(f"📦 Inventory Summary — Risk: {risk}", f"📦 ملخص المخزون — الخطر: {risk}"), insight)
+        return (t(f"📦 Inventory — Risk: {risk}", f"📦 المخزون — الخطر: {risk}"), insight)
 
-    # POS queries
     if any(k in msg for k in ["pos", "cashier", "كاشير", "نقطة بيع", "branch", "فرع"]):
         if pos_df is None or pos_df.empty:
-            return (t("🛒 No POS data loaded. Refresh the POS tab first.", "🛒 لا توجد بيانات POS. يرجى تحديث تبويب POS أولاً."), None)
+            return (t("🛒 No POS data loaded.", "🛒 لا توجد بيانات POS."), None)
         po_col_n = get_display_col(pos_df, "POS Order")
         unique = pos_df.drop_duplicates(subset=[po_col_n]) if po_col_n in pos_df.columns else pos_df
         total = float(safe_get_col(unique, "Total Amount").sum())
@@ -1323,22 +1560,21 @@ def get_ai_response(user_msg: str) -> tuple:
         if any(k in msg for k in ["cashier", "كاشير"]):
             top = _top(unique, "Cashier", "Total Amount")
             insight = _insight_block([(str(k)[:28], f"SAR {v:,.0f}") for k, v in top.items()])
-            return (t("👤 Cashier rankings by sales:", "👤 ترتيب الكاشيرين:"), insight)
+            return (t("👤 Cashier rankings:", "👤 ترتيب الكاشيرين:"), insight)
         if any(k in msg for k in ["branch", "فرع"]):
             top = _top(unique, "Branch", "Total Amount")
             insight = _insight_block([(str(k)[:28], f"SAR {v:,.0f}") for k, v in top.items()])
             return (t("🏪 Branch POS performance:", "🏪 أداء فروع POS:"), insight)
         insight = _insight_block([
-            (t("Total Revenue (SAR)", "إجمالي الإيرادات (ر.س)"), f"{total:,.0f}"),
-            (t("Total Bills", "الفواتير"), f"{bills:,}"),
-            (t("Avg Bill (SAR)", "متوسط الفاتورة"), f"{avg:,.2f}"),
+            (t("Revenue (SAR)", "الإيرادات"), f"{total:,.0f}"),
+            (t("Bills", "الفواتير"), f"{bills:,}"),
+            (t("Avg Bill", "متوسط الفاتورة"), f"{avg:,.2f}"),
         ])
-        return (t(f"🛒 POS Summary — {bills:,} bills, SAR {total:,.0f}", f"🛒 ملخص POS — {bills:,} فاتورة، {total:,.0f} ر.س"), insight)
+        return (t(f"🛒 POS — {bills:,} bills, SAR {total:,.0f}", f"🛒 POS — {bills:,} فاتورة"), insight)
 
-    # Sales queries
     if any(k in msg for k in ["sale", "مبيعات", "customer", "عميل", "revenue"]):
         if sales_df is None or sales_df.empty:
-            return (t("🛍️ No sales data loaded. Refresh the Sales tab first.", "🛍️ لا توجد بيانات مبيعات. يرجى تحديث تبويب المبيعات أولاً."), None)
+            return (t("🛍️ No sales data loaded.", "🛍️ لا توجد بيانات مبيعات."), None)
         so_c_n = get_display_col(sales_df, "SO")
         unique = sales_df.drop_duplicates(subset=[so_c_n]) if so_c_n in sales_df.columns else sales_df
         total = float(safe_get_col(unique, "Total Amount").sum())
@@ -1347,66 +1583,65 @@ def get_ai_response(user_msg: str) -> tuple:
         if any(k in msg for k in ["customer", "عميل", "top customer"]):
             top = _top(unique, "Customer", "Total Amount")
             insight = _insight_block([(str(k)[:28], f"SAR {v:,.0f}") for k, v in top.items()])
-            return (t("👥 Top customers by revenue:", "👥 أفضل العملاء حسب الإيراد:"), insight)
+            return (t("👥 Top customers:", "👥 أفضل العملاء:"), insight)
         insight = _insight_block([
-            (t("Revenue (SAR)", "الإيراد (ر.س)"), f"{total:,.0f}"),
+            (t("Revenue (SAR)", "الإيراد"), f"{total:,.0f}"),
             (t("Orders", "الطلبات"), f"{orders:,}"),
-            (t("Avg Order (SAR)", "متوسط الطلب"), f"{avg:,.2f}"),
+            (t("Avg Order", "متوسط الطلب"), f"{avg:,.2f}"),
         ])
-        return (t(f"🛍️ Sales Summary — {orders:,} orders, SAR {total:,.0f}", f"🛍️ ملخص المبيعات — {orders:,} طلب، {total:,.0f} ر.س"), insight)
+        return (t(f"🛍️ Sales — {orders:,} orders, SAR {total:,.0f}", f"🛍️ المبيعات — {orders:,} طلب"), insight)
 
-    # Purchase queries
     if any(k in msg for k in ["purchase", "مشتريات", "vendor", "مورد", "po"]):
         if pur_df is None or pur_df.empty:
-            return (t("🔖 No purchase data loaded. Refresh the Purchase tab first.", "🔖 لا توجد بيانات مشتريات. يرجى تحديث تبويب المشتريات أولاً."), None)
+            return (t("🔖 No purchase data loaded.", "🔖 لا توجد بيانات مشتريات."), None)
         total_val = float(safe_get_col(pur_df, "Subtotal").sum())
         total_qty = float(safe_get_col(pur_df, "Qty").sum())
         vendors = _nunique(pur_df, "Vendor")
         if any(k in msg for k in ["vendor", "مورد", "supplier"]):
             top = _top(pur_df, "Vendor", "Subtotal")
             insight = _insight_block([(str(k)[:28], f"SAR {v:,.0f}") for k, v in top.items()])
-            return (t("🏭 Top vendors by spend:", "🏭 أفضل الموردين حسب الإنفاق:"), insight)
+            return (t("🏭 Top vendors:", "🏭 أفضل الموردين:"), insight)
         insight = _insight_block([
-            (t("Total Spend (SAR)", "إجمالي الإنفاق (ر.س)"), f"{total_val:,.0f}"),
-            (t("Total Qty", "إجمالي الكمية"), f"{total_qty:,.0f}"),
+            (t("Spend (SAR)", "الإنفاق"), f"{total_val:,.0f}"),
+            (t("Total Qty", "الكمية"), f"{total_qty:,.0f}"),
             (t("Vendors", "الموردون"), f"{vendors:,}"),
         ])
-        return (t(f"🔖 Purchase Summary — SAR {total_val:,.0f} from {vendors:,} vendors", f"🔖 ملخص المشتريات — {total_val:,.0f} ر.س من {vendors:,} مورد"), insight)
+        return (t(f"🔖 Purchase — SAR {total_val:,.0f}", f"🔖 المشتريات — {total_val:,.0f} ر.س"), insight)
 
-    # Executive overview
     if any(k in msg for k in ["overview", "dashboard", "all", "كل", "executive", "ملخص"]):
         data = []
         if inv_df is not None and not inv_df.empty:
-            data.append((t("📦 Inventory Qty", "📦 كمية المخزون"), f"{int(safe_get_col(inv_df, 'On Hand').sum()):,}"))
+            data.append((t("📦 Inventory Qty", "📦 المخزون"), f"{int(safe_get_col(inv_df, 'On Hand').sum()):,}"))
         if sales_df is not None and not sales_df.empty:
             so_c_n = get_display_col(sales_df, "SO")
             unique = sales_df.drop_duplicates(subset=[so_c_n]) if so_c_n in sales_df.columns else sales_df
-            data.append((t("🛍️ Sales Revenue (SAR)", "🛍️ إيرادات المبيعات (ر.س)"), f"{safe_get_col(unique, 'Total Amount').sum():,.0f}"))
+            data.append((t("🛍️ Sales (SAR)", "🛍️ المبيعات"), f"{safe_get_col(unique, 'Total Amount').sum():,.0f}"))
         if pos_df is not None and not pos_df.empty:
             po_c_n = get_display_col(pos_df, "POS Order")
             unique = pos_df.drop_duplicates(subset=[po_c_n]) if po_c_n in pos_df.columns else pos_df
-            data.append((t("🛒 POS Revenue (SAR)", "🛒 إيرادات POS (ر.س)"), f"{safe_get_col(unique, 'Total Amount').sum():,.0f}"))
+            data.append((t("🛒 POS (SAR)", "🛒 POS"), f"{safe_get_col(unique, 'Total Amount').sum():,.0f}"))
         if pur_df is not None and not pur_df.empty:
-            data.append((t("🔖 Purchase Spend (SAR)", "🔖 إنفاق المشتريات (ر.س)"), f"{safe_get_col(pur_df, 'Subtotal').sum():,.0f}"))
+            data.append((t("🔖 Purchase (SAR)", "🔖 المشتريات"), f"{safe_get_col(pur_df, 'Subtotal').sum():,.0f}"))
         insight = _insight_block(data) if data else None
-        return (t(f"💎 Executive Overview — {len(data)} modules loaded", f"💎 نظرة تنفيذية — {len(data)} وحدات محملة"), insight)
+        return (t(f"💎 Executive Overview — {len(data)} modules", f"💎 نظرة تنفيذية — {len(data)} وحدات"), insight)
 
     return (
-        t(
-            "🤖 Ask me about: inventory summary, zero stock, low stock, POS branch sales, top customers, vendor ranking, or 'executive overview'.",
-            "🤖 اسألني عن: ملخص المخزون، صفر مخزون، مخزون منخفض، مبيعات فروع POS، أفضل العملاء، أفضل الموردين، أو 'نظرة تنفيذية'.",
-        ),
+        t("🤖 Ask: inventory, zero stock, POS branches, top customers, vendors, executive overview.",
+          "🤖 اسأل: مخزون، صفر مخزون، فروع POS، أفضل العملاء، الموردين، نظرة تنفيذية."),
         None,
     )
 
 def show_chat_panel():
     st.markdown(f"<div class='section-header'>🤖 {t('Executive AI Insights','المساعد الذكي التنفيذي')}</div>", unsafe_allow_html=True)
-    history_html = "<div style='max-height:440px;overflow-y:auto;padding:8px;'>"
+    history_html = "<div style='max-height:460px;overflow-y:auto;padding:10px 4px;'>"
     if not st.session_state.chat_history:
+        a1 = th_color("accent1")
         history_html += (
-            f"<div style='text-align:center;padding:40px 0;color:{th('text_muted')};'>"
-            f"<div style='font-size:2rem;margin-bottom:12px;'>🤖</div>"
-            f"<div>{t('Ask me anything about your loaded data.','اسألني أي شيء عن بياناتك المحملة.')}</div></div>"
+            f"<div style='text-align:center;padding:50px 20px;color:{th('text_muted')};'>"
+            f"<div style='font-size:2.5rem;margin-bottom:14px;filter:drop-shadow(0 4px 12px {a1}88);'>🤖</div>"
+            f"<div style='font-size:0.9rem;font-weight:600;'>{t('Your AI executive assistant is ready.','مساعدك الذكي التنفيذي جاهز.')}</div>"
+            f"<div style='font-size:0.78rem;margin-top:6px;'>{t('Ask about inventory, sales, POS, or purchasing.','اسأل عن المخزون، المبيعات، POS، أو المشتريات.')}</div>"
+            f"</div>"
         )
     for msg_item in st.session_state.chat_history[-30:]:
         if msg_item["role"] == "user":
@@ -1438,10 +1673,8 @@ def show_chat_panel():
     col_in, col_send, col_clear = st.columns([5, 1, 1])
     with col_in:
         user_input = st.text_input(
-            t("Ask...", "اسأل..."),
-            key="chat_input",
-            label_visibility="collapsed",
-            placeholder=t("e.g. zero stock, top customers, POS branch sales...", "مثال: صفر مخزون، أفضل العملاء، مبيعات الفروع..."),
+            t("Ask...", "اسأل..."), key="chat_input", label_visibility="collapsed",
+            placeholder=t("e.g. zero stock, top customers, POS branch sales...", "مثال: صفر مخزون، أفضل العملاء..."),
         )
     with col_send:
         if st.button(t("Send", "إرسال"), type="primary", key="chat_send", use_container_width=True):
@@ -1464,16 +1697,16 @@ def show_login():
     with col2:
         st.markdown("<div class='login-card'>", unsafe_allow_html=True)
         st.markdown("<div class='login-orb'>💎</div>", unsafe_allow_html=True)
-        st.markdown("<div class='login-title'>Executive Operations</div>", unsafe_allow_html=True)
-        st.markdown("<div class='login-subtitle'>Multi-Company Analytics · Board-Level Dashboard</div>", unsafe_allow_html=True)
+        st.markdown("<div class='login-title'>SWAG Executive</div>", unsafe_allow_html=True)
+        st.markdown("<div class='login-subtitle'>Multi-Company Operations · Board-Level Analytics</div>", unsafe_allow_html=True)
         if st.session_state.get("login_error"):
             st.markdown(f"<div class='alert-banner'>❌ {st.session_state.login_error}</div>", unsafe_allow_html=True)
         with st.form("login_form"):
             email = st.text_input("Email / البريد الإلكتروني", placeholder="user@company.com")
             password = st.text_input("Password / كلمة المرور", type="password")
-            submitted = st.form_submit_button("🚀 Login / دخول", type="primary", use_container_width=True)
+            submitted = st.form_submit_button("🚀 Sign In", type="primary", use_container_width=True)
             if submitted:
-                with st.spinner(t("Verifying credentials...", "جاري التحقق من البيانات...")):
+                with st.spinner(t("Authenticating...", "جاري التحقق...")):
                     ok, err = attempt_login(email.strip(), password)
                 if ok:
                     st.session_state.authenticated = True
@@ -1498,11 +1731,11 @@ def show_dashboard():
 
     with st.sidebar:
         st.markdown(
-            f"<div style='background:{th('card_bg')};border:1px solid {th('border')};border-radius:14px;"
-            f"padding:14px;margin-bottom:16px;text-align:center;'>"
-            f"<div style='font-size:1.8rem;'>💎</div>"
-            f"<div style='font-size:0.88rem;font-weight:700;color:{th('text')};'>SWAG EXECUTIVE DASHBOARD</div>"
-            f"<div style='font-size:0.7rem;color:{th('text_muted')};'>{st.session_state.user_email}</div></div>",
+            f"<div class='sidebar-brand'>"
+            f"<div class='sidebar-brand-icon'>💎</div>"
+            f"<div class='sidebar-brand-name'>SWAG Executive</div>"
+            f"<div class='sidebar-brand-user'>{st.session_state.user_email}</div>"
+            f"</div>",
             unsafe_allow_html=True,
         )
         new_theme = st.selectbox(
@@ -1532,7 +1765,7 @@ def show_dashboard():
             name = get_system_name(key)
             badge = "badge-ok" if cfg.get("url") else "badge-off"
             icon = "✓" if cfg.get("url") else "✗"
-            st.markdown(f"<div style='margin:4px 0;'><span class='{badge}'>{icon} {name}</span></div>", unsafe_allow_html=True)
+            st.markdown(f"<div style='margin:5px 0;'><span class='{badge}'>{icon} {name}</span></div>", unsafe_allow_html=True)
         st.divider()
         st.markdown(f"**📊 {t('Loaded Data','البيانات المحملة')}**")
         for icon, name, df_key, ts_key in [
@@ -1545,17 +1778,20 @@ def show_dashboard():
             ts = st.session_state.get(ts_key)
             if df is not None and not df.empty:
                 ts_str = f" ({ts.strftime('%H:%M')})" if ts else ""
-                st.markdown(f"<span class='badge-ok'>{icon} {name} ({len(df):,}){ts_str}</span>", unsafe_allow_html=True)
+                st.markdown(f"<span class='badge-ok'>{icon} {name} ({len(df):,}){ts_str}</span><br>", unsafe_allow_html=True)
             else:
-                st.markdown(f"<span class='badge-warn'>{icon} {name} —</span>", unsafe_allow_html=True)
+                st.markdown(f"<span class='badge-warn'>{icon} {name} —</span><br>", unsafe_allow_html=True)
         st.divider()
         if st.button(f"🚪 {t('Logout','تسجيل الخروج')}", use_container_width=True):
             do_logout()
 
+    # ── Header ──
     st.markdown(
         f"<div class='dash-header'>"
-        f"<div class='dash-title'>💎 SWAG — Executive Operations Dashboard</div>"
-        f"<div class='dash-subtitle'>{t('Multi-Company · Inventory · POS · Sales · Purchase · AI Insights','متعدد الشركات · المخزون · نقاط البيع · المبيعات · المشتريات · تحليلات ذكية')}</div>"
+        f"<div class='dash-logo'>💎</div>"
+        f"<div class='dash-title'>SWAG — Executive Operations</div>"
+        f"<div class='dash-subtitle'>{t('Multi-Company · Inventory · POS · Sales · Purchasing · AI Insights','متعدد الشركات · المخزون · نقاط البيع · المبيعات · المشتريات · تحليلات ذكية')}</div>"
+        f"<div class='dash-tagline'>⚡ {t('Real-time Odoo Intelligence','تحليلات Odoo الفورية')}</div>"
         f"</div>",
         unsafe_allow_html=True,
     )
@@ -1654,6 +1890,7 @@ def show_dashboard():
                                    color_continuous_scale=[th_color("accent1"), th_color("accent2")],
                                    template=th("plotly_template"), text_auto=".2s",
                                    labels={br_c2: col("Branch"), on_c: col("On Hand")})
+                    fig_b.update_traces(marker_line_width=0)
                     st.plotly_chart(apply_plotly_theme(fig_b), use_container_width=True)
                     st.divider()
             st.markdown(f"<div class='section-header'>📋 {t('Low/Zero Stock Items','عناصر المخزون المنخفض/الصفري')}</div>", unsafe_allow_html=True)
@@ -1741,7 +1978,6 @@ def show_dashboard():
                 tot_c_ = get_display_col(unique, "Total Amount")
                 po_c_ = get_display_col(unique, "POS Order")
                 if br_c_ in unique.columns and tot_c_ in unique.columns:
-                    # Build branch summary manually to avoid agg dict bugs
                     br_rev = unique.groupby(br_c_)[tot_c_].sum().reset_index()
                     br_rev.columns = [br_c_, "Revenue (SAR)"]
                     if po_c_ in unique.columns:
@@ -1762,6 +1998,7 @@ def show_dashboard():
                                 color_continuous_scale=[th_color("accent1"), th_color("accent2")],
                                 template=th("plotly_template"), text_auto=".2s",
                                 labels={ca_c_: col("Cashier"), tot_c_: col("Total Amount")})
+                fig_ca.update_traces(marker_line_width=0)
                 st.plotly_chart(apply_plotly_theme(fig_ca), use_container_width=True)
                 render_paginated_table(ca_agg, "pos_cashier_page")
                 st.divider()
@@ -1772,8 +2009,8 @@ def show_dashboard():
                 st.markdown(f"<div class='section-header'>🏆 {t('Top 10 Products','أفضل 10 منتجات')}</div>", unsafe_allow_html=True)
                 fig_tp = px.bar(tp, x=mc_c_, y=q_c_, color=q_c_,
                                 color_continuous_scale=[th_color("accent1"), th_color("accent2")],
-                                template=th("plotly_template"), text_auto=".2s",
-                                labels={mc_c_: col("Model Code"), q_c_: col("Qty")})
+                                template=th("plotly_template"), text_auto=".2s")
+                fig_tp.update_traces(marker_line_width=0)
                 st.plotly_chart(apply_plotly_theme(fig_tp), use_container_width=True)
                 st.divider()
             st.markdown(f"<div class='section-header'>📈 {t('Daily Revenue Trend','الاتجاه اليومي')}</div>", unsafe_allow_html=True)
@@ -1822,7 +2059,7 @@ def show_dashboard():
         else:
             so_col_n = get_display_col(sales_df, "SO")
             if so_col_n not in sales_df.columns:
-                st.warning(f"⚠️ {t('SO column missing — please refresh data.','عمود SO غير موجود — يرجى تحديث البيانات.')}")
+                st.warning(f"⚠️ {t('SO column missing.','عمود SO غير موجود.')}")
             else:
                 unique = sales_df.drop_duplicates(subset=[so_col_n])
                 total_rev = float(safe_get_col(unique, "Total Amount").sum())
@@ -1836,7 +2073,7 @@ def show_dashboard():
                 m4.metric(t("Avg Order (SAR)", "متوسط الطلب"), f"{avg_order:,.2f}")
                 st.divider()
                 st.markdown(f"<div class='section-header'>📊 {t('Sales Visualization','تصور المبيعات')}</div>", unsafe_allow_html=True)
-                render_visualization(sales_df, sales_viz_mode, "Model Code", "Qty", t("Units Sold by Model", "الوحدات حسب الموديل"))
+                render_visualization(sales_df, sales_viz_mode, "Model Code", "Qty", t("Units by Model", "الوحدات حسب الموديل"))
                 st.divider()
                 if has_col(unique, "Customer"):
                     render_exec_summary(unique, "Total Amount", "Customer", t("Customer Revenue Analysis", "تحليل إيرادات العملاء"))
@@ -1844,7 +2081,6 @@ def show_dashboard():
                     cu_c_ = get_display_col(unique, "Customer")
                     to_c_ = get_display_col(unique, "Total Amount")
                     so_c_ = get_display_col(unique, "SO")
-                    # Build customer summary manually
                     cu_rev = unique.groupby(cu_c_)[to_c_].sum().reset_index()
                     cu_rev.columns = [cu_c_, "Revenue (SAR)"]
                     if so_c_ in unique.columns:
@@ -1860,11 +2096,11 @@ def show_dashboard():
                     mc_c_ = get_display_col(sales_df, "Model Code")
                     q_c_ = get_display_col(sales_df, "Qty")
                     tp = sales_df.groupby(mc_c_)[q_c_].sum().reset_index().sort_values(q_c_, ascending=False).head(10)
-                    st.markdown(f"<div class='section-header'>🏆 {t('Top 10 Products by Qty','أفضل 10 منتجات حسب الكمية')}</div>", unsafe_allow_html=True)
+                    st.markdown(f"<div class='section-header'>🏆 {t('Top 10 Products','أفضل 10 منتجات')}</div>", unsafe_allow_html=True)
                     fig_tp = px.bar(tp, x=mc_c_, y=q_c_, color=q_c_,
                                     color_continuous_scale=[th_color("accent1"), th_color("accent2")],
-                                    template=th("plotly_template"), text_auto=".2s",
-                                    labels={mc_c_: col("Model Code"), q_c_: col("Qty")})
+                                    template=th("plotly_template"), text_auto=".2s")
+                    fig_tp.update_traces(marker_line_width=0)
                     st.plotly_chart(apply_plotly_theme(fig_tp), use_container_width=True)
                     st.divider()
                 st.markdown(f"<div class='section-header'>📈 {t('Daily Revenue Trend','الاتجاه اليومي للإيرادات')}</div>", unsafe_allow_html=True)
@@ -1922,8 +2158,8 @@ def show_dashboard():
             vendors = int(pur_df[ven_col].nunique()) if ven_col in pur_df.columns else 0
             pos_n = int(pur_df[po_col_n].nunique()) if po_col_n in pur_df.columns else 0
             m1, m2, m3, m4 = st.columns(4)
-            m1.metric(t("Purchase Value (SAR)", "قيمة الشراء (ر.س)"), f"{total_val:,.0f}")
-            m2.metric(t("Units Purchased", "الوحدات المشتراة"), f"{total_qty:,}")
+            m1.metric(t("Purchase Value (SAR)", "قيمة الشراء"), f"{total_val:,.0f}")
+            m2.metric(t("Units Purchased", "الوحدات"), f"{total_qty:,}")
             m3.metric(t("Active Vendors", "الموردون"), f"{vendors:,}")
             m4.metric(t("Purchase Orders", "أوامر الشراء"), f"{pos_n:,}")
             st.divider()
@@ -1939,7 +2175,6 @@ def show_dashboard():
                 vc_ = get_display_col(pur_df, ven_col)
                 sc_ = get_display_col(pur_df, sub_col)
                 qc_ = get_display_col(pur_df, qty_col)
-                # Build vendor summary manually
                 vd_spend = pur_df.groupby(vc_)[sc_].sum().reset_index()
                 vd_spend.columns = [vc_, "Spend (SAR)"]
                 vd_qty = pur_df.groupby(vc_)[qc_].sum().reset_index()
@@ -1955,8 +2190,7 @@ def show_dashboard():
                 st.markdown(f"<div class='section-header'>📍 {t('Receipt Location Summary','ملخص مواقع الاستلام')}</div>", unsafe_allow_html=True)
                 fig_loc = px.pie(la.head(10), names=lc_, values=qc_,
                                  color_discrete_sequence=th("plotly_colors"),
-                                 template=th("plotly_template"), hole=0.5,
-                                 labels={lc_: col("Receipt Location"), qc_: col("Qty")})
+                                 template=th("plotly_template"), hole=0.55)
                 fig_loc.update_traces(textposition="inside", textinfo="percent+label")
                 st.plotly_chart(apply_plotly_theme(fig_loc), use_container_width=True)
                 st.divider()
