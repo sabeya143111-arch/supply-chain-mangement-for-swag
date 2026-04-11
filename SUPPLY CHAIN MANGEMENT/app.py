@@ -1,4 +1,4 @@
-# app.py — SWAG EXECUTIVE DASHBOARD — REDESIGNED v5.0
+# app.py — SWAG EXECUTIVE DASHBOARD — v5.1 (Inventory Executive Upgrade)
 import io
 import re
 import hashlib
@@ -13,8 +13,8 @@ import plotly.graph_objects as go
 import streamlit as st
 
 st.set_page_config(
-    page_title="SWAG Dashboard",
-    page_icon="",
+    page_title="SWAG Executive Dashboard",
+    page_icon="💎",
     layout="wide",
     initial_sidebar_state="expanded",
 )
@@ -485,7 +485,7 @@ def build_css():
     """
 
 # ─────────────────────────────────────────────────────────────────────────────
-# SECTION 3: CONSTANTS & CONFIG (unchanged)
+# SECTION 3: CONSTANTS & CONFIG
 # ─────────────────────────────────────────────────────────────────────────────
 SYSTEM_KEYS = ["SWAG", "LAROUCHE", "DIFFC", "FASHION_LIMITS"]
 ROWS_PER_PAGE = 30
@@ -505,7 +505,7 @@ RAW_COLS = {
 }
 
 # ─────────────────────────────────────────────────────────────────────────────
-# SECTION 4: LANGUAGE / LOCALIZATION (unchanged)
+# SECTION 4: LANGUAGE / LOCALIZATION
 # ─────────────────────────────────────────────────────────────────────────────
 def get_lang():
     return st.session_state.get("lang", "EN")
@@ -528,6 +528,10 @@ _COL_MAP = {
     "Revenue (SAR)": ("Revenue (SAR)", "الإيرادات (ر.س)"),
     "Bills": ("Bills", "الفواتير"), "Orders": ("Orders", "الطلبات"),
     "Spend (SAR)": ("Spend (SAR)", "الإنفاق (ر.س)"),
+    "Stock Value": ("Stock Value", "قيمة المخزون"),
+    "Estimated Sold": ("Estimated Sold", "المقدر مبيعاً"),
+    "Sell Through %": ("Sell Through %", "نسبة البيع %"),
+    "Stock Status": ("Stock Status", "حالة المخزون"),
 }
 
 def col(raw_name: str) -> str:
@@ -552,7 +556,7 @@ def get_system_name(key: str) -> str:
     return cfg.get("name", key)
 
 # ─────────────────────────────────────────────────────────────────────────────
-# SECTION 5: SESSION STATE DEFAULTS (unchanged)
+# SECTION 5: SESSION STATE DEFAULTS
 # ─────────────────────────────────────────────────────────────────────────────
 _DEFAULTS = {
     "authenticated": False, "user_email": "", "lang": "EN",
@@ -573,7 +577,7 @@ for _k, _v in _DEFAULTS.items():
         st.session_state[_k] = _v
 
 # ─────────────────────────────────────────────────────────────────────────────
-# SECTION 6: AUTH (unchanged)
+# SECTION 6: AUTH
 # ─────────────────────────────────────────────────────────────────────────────
 _COOKIE_SECRET = "swag_exec_2025_v3"
 
@@ -642,7 +646,7 @@ def do_logout():
     st.rerun()
 
 # ─────────────────────────────────────────────────────────────────────────────
-# SECTION 7: XML-RPC HELPERS (unchanged)
+# SECTION 7: XML-RPC HELPERS
 # ─────────────────────────────────────────────────────────────────────────────
 @st.cache_resource
 def _get_proxy(url: str, endpoint: str):
@@ -680,9 +684,9 @@ def _get_system_conn(key: str) -> tuple:
     return url, db, uid, api_key, name, None
 
 # ─────────────────────────────────────────────────────────────────────────────
-# SECTION 8: DATA UTILITIES (unchanged)
+# SECTION 8: DATA UTILITIES
 # ─────────────────────────────────────────────────────────────────────────────
-_NUMERIC_RAW = ["Sale Price", "On Hand", "Purchase Qty", "Qty", "Unit Price", "Subtotal", "Total Amount"]
+_NUMERIC_RAW = ["Sale Price", "On Hand", "Purchase Qty", "Qty", "Unit Price", "Subtotal", "Total Amount", "Stock Value", "Estimated Sold"]
 
 def coerce_numerics(df: pd.DataFrame) -> pd.DataFrame:
     if df is None or df.empty:
@@ -757,7 +761,7 @@ def dl_name(prefix: str, ext: str) -> str:
     return f"{prefix}_{datetime.now().strftime('%Y%m%d_%H%M%S')}.{ext}"
 
 # ─────────────────────────────────────────────────────────────────────────────
-# SECTION 9: PAGINATED TABLE RENDERER (unchanged logic, styling updated via CSS)
+# SECTION 9: PAGINATED TABLE RENDERER
 # ─────────────────────────────────────────────────────────────────────────────
 def render_paginated_table(df: pd.DataFrame, page_key: str, rows_per_page: int = ROWS_PER_PAGE):
     if df is None or df.empty:
@@ -780,7 +784,7 @@ def render_paginated_table(df: pd.DataFrame, page_key: str, rows_per_page: int =
         cells = "".join(f"<td>{v}</td>" for v in row.values)
         rows_html += f"<tr>{cells}</tr>"
     st.markdown(
-        f"<div class='dataframe-wrap'><table><thead><tr>{header_html}</tr></thead><tbody>{rows_html}</tbody></table></div>",
+        f"<div class='dataframe-wrap'></table><thead><tr>{header_html}</tr></thead><tbody>{rows_html}</tbody></table></div>",
         unsafe_allow_html=True,
     )
     st.markdown(
@@ -804,7 +808,7 @@ def render_paginated_table(df: pd.DataFrame, page_key: str, rows_per_page: int =
         st.rerun()
 
 # ─────────────────────────────────────────────────────────────────────────────
-# SECTION 10: VISUALIZATION ENGINE (unchanged)
+# SECTION 10: VISUALIZATION ENGINE
 # ─────────────────────────────────────────────────────────────────────────────
 def apply_plotly_theme(fig):
     if fig is None:
@@ -1038,7 +1042,7 @@ def show_diag(diag_list: list):
                 st.markdown(f"`✅ [{d.get('system','')}] {d.get('msg','')}`")
 
 # ─────────────────────────────────────────────────────────────────────────────
-# SECTION 11: DATA FETCHERS (unchanged)
+# SECTION 11: DATA FETCHERS
 # ─────────────────────────────────────────────────────────────────────────────
 @st.cache_data(ttl=1800, show_spinner=False)
 def _fetch_inventory_one(key: str, codes_tuple: tuple, exact: bool) -> tuple:
@@ -1046,6 +1050,7 @@ def _fetch_inventory_one(key: str, codes_tuple: tuple, exact: bool) -> tuple:
     if err:
         return [], [], {"system": name, "level": "error", "msg": err}
     try:
+        # 1. Build product.template domain
         prod_domain = []
         if codes_tuple:
             if exact:
@@ -1053,49 +1058,76 @@ def _fetch_inventory_one(key: str, codes_tuple: tuple, exact: bool) -> tuple:
             else:
                 clauses = [("default_code", "=ilike", f"{c}%") for c in codes_tuple]
                 prod_domain = [clauses[0]] if len(clauses) == 1 else ["|"] * (len(clauses) - 1) + clauses
-        products = _odoo_call(url, db, uid, ak, "product.template", "search_read",
-                              [prod_domain if prod_domain else []],
-                              {"fields": ["id", "name", "default_code", "list_price"], "limit": 5000})
-        if not products:
+
+        # 2. Fetch product.template records
+        templates = _odoo_call(url, db, uid, ak, "product.template", "search_read",
+                               [prod_domain if prod_domain else []],
+                               {"fields": ["id", "name", "default_code", "list_price"], "limit": 5000})
+        if not templates:
             return [], [], {"system": name, "level": "ok", "msg": "No products found."}
-        prod_ids = [p["id"] for p in products]
-        tmpl_to_model = {p["id"]: (p.get("default_code") or "").strip() for p in products}
-        tmpl_to_name = {p["id"]: p.get("name", "") for p in products}
-        tmpl_to_price = {p["id"]: float(p.get("list_price") or 0) for p in products}
-        variant_products = _odoo_call(url, db, uid, ak, "product.product", "search_read",
-                                      [[("product_tmpl_id", "in", prod_ids)]],
-                                      {"fields": ["id", "product_tmpl_id"], "limit": 50000})
-        variant_to_tmpl = {}
-        for vp in variant_products:
-            t_raw = vp.get("product_tmpl_id")
-            tmpl_id_v = t_raw if isinstance(t_raw, int) else (t_raw[0] if isinstance(t_raw, list) else t_raw)
-            variant_to_tmpl[vp["id"]] = tmpl_id_v
+
+        template_map = {t["id"]: t for t in templates}
+        template_ids = list(template_map.keys())
+
+        # 3. Fetch all product.product variants linked to these templates
+        variants = _odoo_call(url, db, uid, ak, "product.product", "search_read",
+                              [[("product_tmpl_id", "in", template_ids)]],
+                              {"fields": ["id", "product_tmpl_id"], "limit": 50000})
+        variant_to_tmpl = {v["id"]: v["product_tmpl_id"] for v in variants}
         variant_ids = list(variant_to_tmpl.keys())
+
+        if not variant_ids:
+            # No variants → no stock
+            total_rows = []
+            branch_rows = []
+            for tmpl_id, t in template_map.items():
+                total_rows.append({
+                    "System": name,
+                    "Model Code": (t.get("default_code") or "").strip(),
+                    "Product": t.get("name", ""),
+                    "Sale Price": float(t.get("list_price") or 0),
+                    "On Hand": 0,
+                })
+            return total_rows, branch_rows, {"system": name, "level": "ok", "msg": f"No variants, zero stock for {len(total_rows)} templates."}
+
+        # 4. Query stock.quant using valid fields
         quants = _odoo_call(url, db, uid, ak, "stock.quant", "search_read",
                             [[("product_id", "in", variant_ids), ("location_id.usage", "=", "internal")]],
                             {"fields": ["product_id", "location_id", "quantity"], "limit": 50000})
-        tmpl_qty: dict = {}
+
+        # 5. Aggregate quantities per template and per branch
+        tmpl_qty = {}
         branch_rows = []
         for q in quants:
-            pid_raw = q.get("product_id")
-            variant_id = pid_raw if isinstance(pid_raw, int) else (pid_raw[0] if isinstance(pid_raw, list) else pid_raw)
-            tmpl_id = variant_to_tmpl.get(variant_id, variant_id)
+            variant_id = q["product_id"][0] if isinstance(q["product_id"], list) else q["product_id"]
+            tmpl_id = variant_to_tmpl.get(variant_id)
+            if not tmpl_id:
+                continue
             qty = float(q.get("quantity") or 0)
             tmpl_qty[tmpl_id] = tmpl_qty.get(tmpl_id, 0) + qty
+            # Branch row
             loc = q.get("location_id")
             loc_name = loc[1] if isinstance(loc, list) and len(loc) > 1 else str(loc or "")
-            mc_val = tmpl_to_model.get(tmpl_id, "")
+            mc_val = (template_map.get(tmpl_id, {}).get("default_code") or "").strip()
             if mc_val:
-                branch_rows.append({"System": name, "Branch": loc_name, "Model Code": mc_val, "On Hand": qty})
+                branch_rows.append({
+                    "System": name,
+                    "Branch": loc_name,
+                    "Model Code": mc_val,
+                    "On Hand": qty,
+                })
+
+        # 6. Build total rows for all templates (including those with zero stock)
         total_rows = []
-        for tmpl_id in prod_ids:
+        for tmpl_id, t in template_map.items():
             total_rows.append({
                 "System": name,
-                "Model Code": tmpl_to_model.get(tmpl_id, ""),
-                "Product": tmpl_to_name.get(tmpl_id, ""),
-                "Sale Price": tmpl_to_price.get(tmpl_id, 0),
+                "Model Code": (t.get("default_code") or "").strip(),
+                "Product": t.get("name", ""),
+                "Sale Price": float(t.get("list_price") or 0),
                 "On Hand": tmpl_qty.get(tmpl_id, 0),
             })
+
         return total_rows, branch_rows, {"system": name, "level": "ok", "msg": f"Loaded {len(total_rows)} products, {len(quants)} quant records."}
     except Exception as e:
         return [], [], {"system": name, "level": "error", "msg": f"{type(e).__name__}: {e}"}
@@ -1436,7 +1468,7 @@ def fetch_sales(selected_keys, date_from, date_to, model_filter):
     return combined.sort_values("Date", ascending=False).reset_index(drop=True), diag
 
 # ─────────────────────────────────────────────────────────────────────────────
-# SECTION 12: AI INSIGHTS (unchanged)
+# SECTION 12: AI INSIGHTS
 # ─────────────────────────────────────────────────────────────────────────────
 def _insight_block(rows_data: list) -> str:
     inner = "".join(
@@ -1649,7 +1681,7 @@ def show_chat_panel():
             st.rerun()
 
 # ─────────────────────────────────────────────────────────────────────────────
-# SECTION 13: LOGIN PAGE — REDESIGNED
+# SECTION 13: LOGIN PAGE
 # ─────────────────────────────────────────────────────────────────────────────
 def show_login():
     st.markdown(build_css(), unsafe_allow_html=True)
@@ -1792,9 +1824,9 @@ def show_dashboard():
         f"🤖 {t('AI Insights','تحليلات ذكية')}",
     ])
 
-    # ── INVENTORY TAB ─────────────────────────────────────────────────────────
+    # ── INVENTORY TAB (EXECUTIVE DASHBOARD) ───────────────────────────────────
     with tab_inv:
-        st.markdown(f"<div class='section-header'>📦 {t('Inventory Overview','نظرة عامة على المخزون')}</div>", unsafe_allow_html=True)
+        st.markdown(f"<div class='section-header'>📦 {t('Inventory Executive Dashboard','لوحة تحكم المخزون التنفيذية')}</div>", unsafe_allow_html=True)
         # Filters row
         f1, f2, f3, f4 = st.columns([2, 1.5, 1.5, 1])
         with f1:
@@ -1830,6 +1862,11 @@ def show_dashboard():
                         else:
                             total_df["Purchase Qty"] = 0
                     st.session_state.inventory_df = coerce_numerics(total_df)
+                    # Extend branch_df with Sale Price and Stock Value
+                    if branch_df is not None and not branch_df.empty and "Model Code" in branch_df.columns:
+                        price_map = total_df.set_index("Model Code")["Sale Price"].to_dict()
+                        branch_df["Sale Price"] = branch_df["Model Code"].map(price_map).fillna(0)
+                        branch_df["Stock Value"] = branch_df["On Hand"] * branch_df["Sale Price"]
                     st.session_state.inventory_branch_df = coerce_numerics(branch_df)
                     st.session_state.inv_diag = diag
                     st.session_state.inv_page = 0
@@ -1842,52 +1879,112 @@ def show_dashboard():
         if total_df is None or total_df.empty:
             st.markdown(f"<div class='info-banner'>ℹ️ {t('Click Refresh to load data.','اضغط تحديث لتحميل البيانات.')}</div>", unsafe_allow_html=True)
         else:
-            qty_s = safe_get_col(total_df, "On Hand")
-            price_s = safe_get_col(total_df, "Sale Price")
-            mc_c = get_display_col(total_df, "Model Code")
-            models = int(total_df[mc_c].nunique()) if mc_c in total_df.columns else 0
-            br_c = get_display_col(branch_df, "Branch") if (branch_df is not None and not branch_df.empty) else "Branch"
-            br_count = int(branch_df[br_c].nunique()) if (branch_df is not None and not branch_df.empty and br_c in branch_df.columns) else 0
-            zero_cnt = int((qty_s == 0).sum())
-            low_cnt = int(((qty_s > 0) & (qty_s <= low_thresh)).sum())
-            # KPI row
+            # --- Derive additional fields for executive dashboard ---
+            total_df["Stock Value"] = total_df["On Hand"] * total_df["Sale Price"]
+            if "Purchase Qty" not in total_df.columns:
+                total_df["Purchase Qty"] = 0
+            total_df["Estimated Sold"] = (total_df["Purchase Qty"] - total_df["On Hand"]).clip(lower=0)
+            total_df["Sell Through %"] = total_df.apply(
+                lambda row: (row["Estimated Sold"] / row["Purchase Qty"] * 100) if row["Purchase Qty"] > 0 else 0,
+                axis=1
+            )
+            # Stock Status based on low_thresh
+            def stock_status(row):
+                oh = row["On Hand"]
+                if oh == 0:
+                    return "Zero"
+                elif oh <= low_thresh:
+                    return "Low"
+                elif oh <= low_thresh * 3:
+                    return "Medium"
+                else:
+                    return "Healthy"
+            total_df["Stock Status"] = total_df.apply(stock_status, axis=1)
+
+            # --- Executive KPI Row ---
+            total_qty = int(total_df["On Hand"].sum())
+            total_value = float(total_df["Stock Value"].sum())
+            total_purch = int(total_df["Purchase Qty"].sum())
+            total_est_sold = int(total_df["Estimated Sold"].sum())
+            avg_sell_through = total_df["Sell Through %"].mean()
+            low_zero_count = len(total_df[total_df["Stock Status"].isin(["Zero", "Low"])])
+
             k1, k2, k3, k4, k5, k6 = st.columns(6)
-            k1.metric(t("Total Qty", "إجمالي الكمية"), f"{int(qty_s.sum()):,}")
-            k2.metric(t("Value (SAR)", "القيمة"), f"{float((qty_s * price_s).sum()):,.0f}")
-            k3.metric(t("Models", "الموديلات"), f"{models:,}")
-            k4.metric(t("Branches", "الفروع"), f"{br_count:,}")
-            k5.metric(t("Zero Stock", "صفر"), f"{zero_cnt:,}")
-            k6.metric(t(f"Low ≤{low_thresh}", f"منخفض ≤{low_thresh}"), f"{low_cnt:,}")
+            k1.metric(t("Total On Hand Qty", "إجمالي الكمية"), f"{total_qty:,}")
+            k2.metric(t("Stock Value (SAR)", "قيمة المخزون"), f"{total_value:,.0f}")
+            k3.metric(t("Total Purchase Qty", "إجمالي المشتريات"), f"{total_purch:,}")
+            k4.metric(t("Estimated Sold", "المقدر مبيعاً"), f"{total_est_sold:,}")
+            k5.metric(t("Avg Sell Through %", "متوسط نسبة البيع"), f"{avg_sell_through:.1f}%")
+            k6.metric(t("Low/Zero Count", "عدد المنخفض/الصفر"), f"{low_zero_count:,}")
+
             # Alerts
+            zero_cnt = len(total_df[total_df["On Hand"] == 0])
             if zero_cnt > 0:
                 st.markdown(f"<div class='alert-banner'>🔴 {zero_cnt} {t('products with zero stock — reorder immediately','منتج بدون مخزون — أعد الطلب فوراً')}</div>", unsafe_allow_html=True)
+            low_cnt = len(total_df[(total_df["On Hand"] > 0) & (total_df["On Hand"] <= low_thresh)])
             if low_cnt > 0:
                 st.markdown(f"<div class='warn-banner'>⚠️ {low_cnt} {t(f'products low stock (≤{low_thresh})',f'منتج مخزون منخفض (≤{low_thresh})')}</div>", unsafe_allow_html=True)
-            # Main visualization
-            st.markdown(f"<div class='section-header'>📊 {t('Stock Visualization','تصور المخزون')}</div>", unsafe_allow_html=True)
-            render_visualization(total_df, inv_viz_mode, "Model Code", "On Hand", t("Stock by Model", "المخزون حسب الموديل"))
-            # Summary
-            render_exec_summary(total_df, "On Hand", "Model Code", t("Stock Performance", "أداء المخزون"))
-            # Branch distribution
-            if branch_df is not None and not branch_df.empty:
-                br_c2 = get_display_col(branch_df, "Branch")
-                on_c = get_display_col(branch_df, "On Hand")
-                if br_c2 in branch_df.columns and on_c in branch_df.columns:
-                    st.markdown(f"<div class='section-header'>🏪 {t('Branch Distribution','توزيع المخزون حسب الفرع')}</div>", unsafe_allow_html=True)
-                    branch_agg = branch_df.groupby(br_c2)[on_c].sum().reset_index().sort_values(on_c, ascending=False)
-                    fig_b = px.bar(branch_agg, x=br_c2, y=on_c, color=on_c,
-                                   color_continuous_scale=[th_color("accent1"), th_color("accent2")],
-                                   template=th("plotly_template"), text_auto=".2s",
-                                   labels={br_c2: col("Branch"), on_c: col("On Hand")})
-                    fig_b.update_traces(marker_line_width=0)
-                    st.plotly_chart(apply_plotly_theme(fig_b), use_container_width=True)
-            # Low stock table
-            st.markdown(f"<div class='section-header'>📋 {t('Low/Zero Stock Items','عناصر المخزون المنخفض/الصفري')}</div>", unsafe_allow_html=True)
-            low_df = total_df[qty_s <= low_thresh].copy()
-            render_paginated_table(low_df, "inv_page")
-            with st.expander(f"📋 {t('Full Inventory Table','جدول المخزون الكامل')}"):
-                render_paginated_table(total_df, "inv_full_page")
-            # Downloads
+
+            # --- Executive Visualizations ---
+            st.markdown(f"<div class='section-header'>📊 {t('Stock Intelligence','ذكاء المخزون')}</div>", unsafe_allow_html=True)
+            # Branch Stock Value
+            if branch_df is not None and not branch_df.empty and "Stock Value" in branch_df.columns:
+                branch_val = branch_df.groupby("Branch")["Stock Value"].sum().reset_index().sort_values("Stock Value", ascending=False).head(15)
+                fig_branch = px.bar(branch_val, x="Branch", y="Stock Value", title=t("Branch Stock Value (SAR)", "قيمة المخزون بالفرع (ر.س)"),
+                                    color="Stock Value", color_continuous_scale=[th_color("accent1"), th_color("accent2")],
+                                    template=th("plotly_template"), text_auto=".2s")
+                fig_branch.update_traces(marker_line_width=0)
+                st.plotly_chart(apply_plotly_theme(fig_branch), use_container_width=True)
+
+            # Top Models by Stock Value
+            top_models = total_df.nlargest(10, "Stock Value")[["Model Code", "Stock Value"]]
+            fig_top = px.bar(top_models, x="Model Code", y="Stock Value", title=t("Top 10 Models by Stock Value", "أفضل 10 موديلات بقيمة المخزون"),
+                             color="Stock Value", color_continuous_scale=[th_color("accent1"), th_color("accent2")],
+                             template=th("plotly_template"), text_auto=".2s")
+            fig_top.update_traces(marker_line_width=0)
+            st.plotly_chart(apply_plotly_theme(fig_top), use_container_width=True)
+
+            # Stock Health Donut
+            status_counts = total_df["Stock Status"].value_counts().reset_index()
+            status_counts.columns = ["Status", "Count"]
+            fig_donut = px.pie(status_counts, names="Status", values="Count", hole=0.55, title=t("Stock Health Distribution", "توزيع صحة المخزون"),
+                               color_discrete_sequence=th("plotly_colors"), template=th("plotly_template"))
+            fig_donut.update_traces(textposition="inside", textinfo="percent+label")
+            st.plotly_chart(apply_plotly_theme(fig_donut), use_container_width=True)
+
+            # --- Action Tables ---
+            st.markdown(f"<div class='section-header'>⚡ {t('Actionable Insights','رؤى قابلة للتنفيذ')}</div>", unsafe_allow_html=True)
+
+            # Reorder Priority (On Hand > 0 and ≤ low_thresh)
+            reorder_df = total_df[(total_df["On Hand"] > 0) & (total_df["On Hand"] <= low_thresh)].copy()
+            if not reorder_df.empty:
+                reorder_df = reorder_df.sort_values(["On Hand", "Stock Value"], ascending=[True, False])
+                reorder_cols = ["Model Code", "Product", "On Hand", "Stock Value", "Sell Through %"]
+                reorder_show = reorder_df[reorder_cols].head(20)
+                st.markdown(f"**{t('Reorder Priority (Low Stock)','أولوية إعادة الطلب (مخزون منخفض)')}**")
+                render_paginated_table(reorder_show, "inv_reorder_page")
+            else:
+                st.markdown(f"<div class='ok-banner'>✅ {t('No low stock items to reorder.','لا توجد عناصر منخفضة المخزون لإعادة الطلب.')}</div>", unsafe_allow_html=True)
+
+            # Dead / Slow Stock Candidates (On Hand > low_thresh and Sell Through % <= 20)
+            dead_df = total_df[(total_df["On Hand"] > low_thresh) & (total_df["Sell Through %"] <= 20)].copy()
+            if not dead_df.empty:
+                dead_df = dead_df.sort_values("Stock Value", ascending=False)
+                dead_cols = ["Model Code", "Product", "On Hand", "Stock Value", "Purchase Qty", "Estimated Sold", "Sell Through %"]
+                dead_show = dead_df[dead_cols].head(20)
+                st.markdown(f"**{t('Dead / Slow Stock Candidates (≤20% Sell Through)','مرشحات المخزون الميت/البطيء (نسبة بيع ≤20%)')}**")
+                render_paginated_table(dead_show, "inv_dead_page")
+            else:
+                st.markdown(f"<div class='ok-banner'>✅ {t('No dead/slow stock identified.','لم يتم تحديد مخزون ميت/بطيء.')}</div>", unsafe_allow_html=True)
+
+            # Full Inventory Detail Table (with all derived fields)
+            st.markdown(f"<div class='section-header'>📋 {t('Full Inventory Detail','تفاصيل المخزون الكاملة')}</div>", unsafe_allow_html=True)
+            detail_cols = ["System", "Model Code", "Product", "Sale Price", "On Hand", "Purchase Qty", "Estimated Sold", "Sell Through %", "Stock Value", "Stock Status"]
+            detail_df = total_df[detail_cols].copy()
+            render_paginated_table(detail_df, "inv_full_page")
+
+            # Export Section
+            st.markdown(f"<div class='section-header'>⬇️ {t('Export Data','تصدير البيانات')}</div>", unsafe_allow_html=True)
             d1, d2, d3 = st.columns(3)
             with d1:
                 st.download_button("⬇️ CSV", to_csv(localize_df(total_df)), dl_name("inventory", "csv"), "text/csv", use_container_width=True)
@@ -1904,7 +2001,7 @@ def show_dashboard():
                         use_container_width=True,
                     )
 
-    # ── POS TAB ───────────────────────────────────────────────────────────────
+    # ── POS TAB (unchanged) ──────────────────────────────────────────────────
     with tab_pos:
         st.markdown(f"<div class='section-header'>🛒 {t('POS Analytics','تحليلات نقاط البيع')}</div>", unsafe_allow_html=True)
         # Filters
@@ -2004,7 +2101,7 @@ def show_dashboard():
             with p2:
                 st.download_button("⬇️ Excel", to_excel(localize_df(pos_df)), dl_name("pos", "xlsx"), "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet", use_container_width=True)
 
-    # ── SALES TAB ─────────────────────────────────────────────────────────────
+    # ── SALES TAB (unchanged) ─────────────────────────────────────────────────
     with tab_sales:
         st.markdown(f"<div class='section-header'>🛍️ {t('Sales Analytics','تحليلات المبيعات')}</div>", unsafe_allow_html=True)
         fc1, fc2, fc3 = st.columns([2, 2, 1])
@@ -2086,7 +2183,7 @@ def show_dashboard():
                 with s2:
                     st.download_button("⬇️ Excel", to_excel(localize_df(sales_df)), dl_name("sales", "xlsx"), "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet", use_container_width=True)
 
-    # ── PURCHASE TAB ──────────────────────────────────────────────────────────
+    # ── PURCHASE TAB (unchanged) ──────────────────────────────────────────────
     with tab_pur:
         st.markdown(f"<div class='section-header'>🔖 {t('Purchase Analytics','تحليلات المشتريات')}</div>", unsafe_allow_html=True)
         fc1, fc2, fc3 = st.columns([2, 2, 1])
@@ -2163,7 +2260,7 @@ def show_dashboard():
             with pd2:
                 st.download_button("⬇️ Excel", to_excel(localize_df(pur_df)), dl_name("purchase", "xlsx"), "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet", use_container_width=True)
 
-    # ── AI INSIGHTS TAB ───────────────────────────────────────────────────────
+    # ── AI INSIGHTS TAB (unchanged) ───────────────────────────────────────────
     with tab_chat:
         show_chat_panel()
 
