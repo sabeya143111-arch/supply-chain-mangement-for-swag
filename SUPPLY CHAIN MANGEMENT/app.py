@@ -1696,8 +1696,8 @@ def show_login():
     _, col2, _ = st.columns([1, 1.1, 1])
     with col2:
         st.markdown("<div class='login-card'>", unsafe_allow_html=True)
-        st.markdown("<div class='login-orb'>💎</div>", unsafe_allow_html=True)
-        st.markdown("<div class='login-title'>SWAG Executive</div>", unsafe_allow_html=True)
+        st.markdown("<div class='login-orb'></div>", unsafe_allow_html=True)
+        st.markdown("<div class='login-title'>SWAG DASHBORD</div>", unsafe_allow_html=True)
         st.markdown("<div class='login-subtitle'>Multi-Company Operations · Board-Level Analytics</div>", unsafe_allow_html=True)
         if st.session_state.get("login_error"):
             st.markdown(f"<div class='alert-banner'>❌ {st.session_state.login_error}</div>", unsafe_allow_html=True)
