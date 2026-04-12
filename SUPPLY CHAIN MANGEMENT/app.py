@@ -1083,7 +1083,7 @@ def restore_session():
 def _proxy(url, ep):
     return xmlrpc.client.ServerProxy(f"{url}/xmlrpc/2/{ep}", allow_none=True)
 
-@st.cache_data(ttl=28800, show_spinner=False)
+@st.cache_data(ttl=3600, show_spinner=False)
 def _auth(url, db, user, key):
     try:
         uid = _proxy(url, "common").authenticate(db, user, key, {})
@@ -1730,8 +1730,8 @@ def fetch_all_systems_sales_history(model_code, date_from, date_to, system_keys=
 def fetch_swag_purchase_history(model_code, date_from, date_to):
     return fetch_purchase_history_for_system("SWAG", model_code, date_from, date_to)
 
-def fetchswagsaleshistory(modelcode, datefrom, dateto):
-    return fetch_sales_history_for_system("SWAG", modelcode, datefrom, dateto)
+def fetch_swag_sales_history(model_code, date_from, date_to):
+    return fetch_sales_history_for_system("SWAG", model_code, date_from, date_to)
 
 # ─────────────────────────────────────────────────────────────────────────────
 # PRICE HISTORY
