@@ -135,11 +135,11 @@ def _domain(codes, exact):
     return d
 
 def _get_conn(key):
-    cfg    = st.secrets.get(key, {})
-    url    = cfg.get("url", "").rstrip("/")
-    db     = cfg.get("db", "")
-    user   = cfg.get("user", "")
-    api_key= cfg.get("api_key", "")
+    cfg     = st.secrets.get(key, {})
+    url     = cfg.get("url", "").rstrip("/")
+    db      = cfg.get("db", "")
+    user    = cfg.get("user", "")
+    api_key = cfg.get("api_key", "")
     if not all([url, db, user, api_key]):
         return None, None, None, None, key, f"[{key}] Missing config."
     uid = _auth(url, db, user, api_key)
@@ -284,6 +284,7 @@ def _fetch_stock_one(key, codes_tuple, exact, low_thresh, show_transfers, show_r
     except Exception as e:
         return [], [], [], [], {"system": name, "level": "error", "msg": f"{type(e).__name__}: {e}"}
 
+
 def fetch_all_data(codes, exact, low_stock_thresh, show_transfers, show_reorder,
                    reorder_mode, reorder_target_days, reorder_max_level, reorder_point):
     codes_tuple = tuple(sorted(set(codes))) if codes else ()
@@ -300,8 +301,7 @@ def fetch_all_data(codes, exact, low_stock_thresh, show_transfers, show_reorder,
             sys_stats[k] = stat
 
     def _df(rows, cols):
-        df = pd.DataFrame(rows) if rows else pd.DataFrame(columns=cols)
-        return df
+        return pd.DataFrame(rows) if rows else pd.DataFrame(columns=cols)
 
     total_df = _df(all_total, [C_SYSTEM,C_MODEL,C_PRODUCT,C_SALE_PRICE,C_ON_HAND,C_SOLD,C_VEL,C_CATEGORY])
     for c in [C_SALE_PRICE, C_ON_HAND, C_SOLD, C_VEL]:
@@ -352,22 +352,22 @@ def fetch_purchase_history_for_system(system_key, model_codes, date_from, date_t
             po   = po_map.get(oid, {})
             pid  = (line["product_id"][0] if isinstance(line.get("product_id"), list) else line.get("product_id"))
             prod = prod_map.get(pid, {})
-            categ_raw   = prod.get("categ_id")
-            partner_raw = po.get("partner_id")
-            currency_raw= po.get("currency_id")
+            categ_raw    = prod.get("categ_id")
+            partner_raw  = po.get("partner_id")
+            currency_raw = po.get("currency_id")
             rows.append({
-                C_SYSTEM: name,
-                C_DATE:   str(po.get("date_approve",""))[:10],
-                C_PO:     po.get("name",""),
-                C_VENDOR: partner_raw[1] if isinstance(partner_raw, list) and len(partner_raw)>1 else "",
+                C_SYSTEM:   name,
+                C_DATE:     str(po.get("date_approve",""))[:10],
+                C_PO:       po.get("name",""),
+                C_VENDOR:   partner_raw[1] if isinstance(partner_raw, list) and len(partner_raw)>1 else "",
                 C_CURRENCY: currency_raw[1] if isinstance(currency_raw, list) and len(currency_raw)>1 else "SAR",
-                C_PRODUCT: prod.get("name",""),
-                C_MODEL:   (prod.get("default_code") or "").strip(),
-                C_CATEGORY:categ_raw[1] if isinstance(categ_raw, list) and len(categ_raw)>1 else "",
+                C_PRODUCT:  prod.get("name",""),
+                C_MODEL:    (prod.get("default_code") or "").strip(),
+                C_CATEGORY: categ_raw[1] if isinstance(categ_raw, list) and len(categ_raw)>1 else "",
                 C_QTY_PURCHASED: float(line.get("product_qty") or 0),
                 C_UNIT_PRICE:    float(line.get("price_unit") or 0),
                 C_SUBTOTAL:      float(line.get("price_subtotal") or 0),
-                C_STATE:  po.get("state",""),
+                C_STATE:    po.get("state",""),
             })
         if not rows: return _empty
         df = pd.DataFrame(rows)
@@ -377,6 +377,7 @@ def fetch_purchase_history_for_system(system_key, model_codes, date_from, date_t
         return df.sort_values(C_DATE, ascending=False).reset_index(drop=True)
     except Exception:
         return _empty
+
 
 def fetch_all_purchase_history(model_codes, date_from, date_to):
     codes_tuple = tuple(sorted(set(model_codes))) if model_codes else ()
@@ -426,17 +427,17 @@ def fetch_sales_history_for_system(system_key, model_codes, date_from, date_to):
             categ_raw   = prod.get("categ_id")
             partner_raw = order.get("partner_id")
             rows.append({
-                C_SYSTEM:  name,
-                C_DATE:    str(order.get("date_order",""))[:10],
-                C_SO:      order.get("name",""),
-                C_CUSTOMER:partner_raw[1] if isinstance(partner_raw, list) and len(partner_raw)>1 else "",
-                C_PRODUCT: prod.get("name",""),
-                C_MODEL:   (prod.get("default_code") or "").strip(),
-                C_CATEGORY:categ_raw[1] if isinstance(categ_raw, list) and len(categ_raw)>1 else "",
-                C_QTY:       float(line.get("product_uom_qty") or 0),
-                C_UNIT_PRICE:float(line.get("price_unit") or 0),
-                C_SUBTOTAL:  float(line.get("price_subtotal") or 0),
-                C_STATE:   order.get("state",""),
+                C_SYSTEM:   name,
+                C_DATE:     str(order.get("date_order",""))[:10],
+                C_SO:       order.get("name",""),
+                C_CUSTOMER: partner_raw[1] if isinstance(partner_raw, list) and len(partner_raw)>1 else "",
+                C_PRODUCT:  prod.get("name",""),
+                C_MODEL:    (prod.get("default_code") or "").strip(),
+                C_CATEGORY: categ_raw[1] if isinstance(categ_raw, list) and len(categ_raw)>1 else "",
+                C_QTY:        float(line.get("product_uom_qty") or 0),
+                C_UNIT_PRICE: float(line.get("price_unit") or 0),
+                C_SUBTOTAL:   float(line.get("price_subtotal") or 0),
+                C_STATE:    order.get("state",""),
             })
         if not rows: return _empty
         df = pd.DataFrame(rows)
@@ -446,6 +447,7 @@ def fetch_sales_history_for_system(system_key, model_codes, date_from, date_to):
         return df.sort_values(C_DATE, ascending=False).reset_index(drop=True)
     except Exception:
         return _empty
+
 
 def fetch_all_sales_history(model_codes, date_from, date_to):
     codes_tuple = tuple(sorted(set(model_codes))) if model_codes else ()
@@ -459,12 +461,16 @@ def fetch_all_sales_history(model_codes, date_from, date_to):
 # ─────────────────────────────────────────────────────────────────────────────
 # EXPORT
 # ─────────────────────────────────────────────────────────────────────────────
-def to_csv(df):   return df.to_csv(index=False).encode("utf-8-sig")
+def to_csv(df):
+    return df.to_csv(index=False).encode("utf-8-sig")
+
 def to_excel(df):
     out = io.BytesIO()
     with pd.ExcelWriter(out, engine="openpyxl") as w:
         (df if df is not None and not df.empty else pd.DataFrame({"Message": ["No data"]})).to_excel(w, index=False)
-    out.seek(0); return out.getvalue()
+    out.seek(0)
+    return out.getvalue()
+
 def dl_name(prefix, ext):
     return f"{prefix}_{datetime.now().strftime('%Y%m%d_%H%M%S')}.{ext}"
 
@@ -472,7 +478,8 @@ def dl_name(prefix, ext):
 # PAGINATION
 # ─────────────────────────────────────────────────────────────────────────────
 def paginate_df(df, page_key, page_size=PAGE_SIZE):
-    if df is None or df.empty: return df, 1, 0
+    if df is None or df.empty:
+        return df, 1, 0
     total       = len(df)
     total_pages = max(1, math.ceil(total / page_size))
     current     = min(st.session_state.get(page_key, 0), total_pages - 1)
@@ -487,16 +494,16 @@ def paginate_df(df, page_key, page_size=PAGE_SIZE):
     c1, c2, _, c3, c4 = st.columns([1,1,3,1,1])
     if c1.button("⏮", key=f"{page_key}_first", use_container_width=True):
         st.session_state[page_key] = 0; st.rerun()
-    if c2.button("◀", key=f"{page_key}_prev",  use_container_width=True):
+    if c2.button("◀", key=f"{page_key}_prev", use_container_width=True):
         st.session_state[page_key] = max(0, current-1); st.rerun()
-    if c3.button("▶", key=f"{page_key}_next",  use_container_width=True):
+    if c3.button("▶", key=f"{page_key}_next", use_container_width=True):
         st.session_state[page_key] = min(total_pages-1, current+1); st.rerun()
-    if c4.button("⏭", key=f"{page_key}_last",  use_container_width=True):
+    if c4.button("⏭", key=f"{page_key}_last", use_container_width=True):
         st.session_state[page_key] = total_pages-1; st.rerun()
     return df.iloc[start:end].copy(), total_pages, current
 
 # ─────────────────────────────────────────────────────────────────────────────
-# CSS  (exact HTML dashboard match)
+# CSS  (matches HTML dashboard design)
 # ─────────────────────────────────────────────────────────────────────────────
 def _css():
     return """
@@ -635,6 +642,7 @@ def render_kpis(cards):
                  f"<div class='kpi-meta'>{meta}</div></div>")
     st.markdown(html + "</div>", unsafe_allow_html=True)
 
+
 def mini_grid(cards):
     html = "<div class='mini-grid'>"
     for label, value, meta in cards:
@@ -644,9 +652,11 @@ def mini_grid(cards):
                  f"<div class='mini-meta'>{meta}</div></div>")
     st.markdown(html + "</div>", unsafe_allow_html=True)
 
+
 def _days_pill(val):
     try:
-        if str(val) == "∞" or val is None: return "<span class='pill-soft'>∞ days</span>"
+        if str(val) == "∞" or val is None:
+            return "<span class='pill-soft'>∞ days</span>"
         d = float(val)
         if d < 7:  return f"<span class='pill-danger'>🔴 {d:.0f}d left</span>"
         if d < 14: return f"<span class='pill-warning'>🟡 {d:.0f}d left</span>"
@@ -654,11 +664,13 @@ def _days_pill(val):
     except Exception:
         return f"<span class='pill-soft'>{val}</span>"
 
+
 def _priority_pill(val):
     v = str(val)
     if "Critical" in v: return f"<span class='pill-danger'>{v}</span>"
     if "Low"      in v: return f"<span class='pill-warning'>{v}</span>"
     return f"<span class='pill-ok'>{v}</span>"
+
 
 def render_table(df):
     if df is None or df.empty:
@@ -689,8 +701,11 @@ def render_table(df):
         f"<tbody>{rows_html}</tbody></table></div>",
         unsafe_allow_html=True)
 
+
 def display_df(df, table_key=None):
-    if df is None or df.empty: render_table(df); return
+    if df is None or df.empty:
+        render_table(df)
+        return
     key = table_key or f"tbl_{abs(hash(str(df.columns.tolist()))) % 10**8}"
     page_df, _, _ = paginate_df(df, key)
     render_table(page_df)
@@ -765,11 +780,13 @@ def show_login():
                 else:
                     st.session_state._login_err = err_msg; st.rerun()
 
+
 def _attempt_login(email, password):
     cfg = st.secrets.get("SWAG", {})
     url = cfg.get("url","").rstrip("/")
     db  = cfg.get("db","")
-    if not url or not db: return False, "SWAG connection not configured."
+    if not url or not db:
+        return False, "SWAG connection not configured."
     try:
         uid = xmlrpc.client.ServerProxy(f"{url}/xmlrpc/2/common", allow_none=True).authenticate(db, email, password, {})
         return (True, "") if (uid and isinstance(uid, int) and uid > 0) else (False, f"Login failed on {db}.")
@@ -783,7 +800,7 @@ def render_sidebar():
     with st.sidebar:
         email  = st.session_state.get("user_email", "")
         avatar = email[0].upper() if email else "S"
-        reorder_df = st.session_state.get("reorder_df")
+        reorder_df  = st.session_state.get("reorder_df")
         reorder_cnt = len(reorder_df) if reorder_df is not None and not reorder_df.empty else 0
         crit_cnt    = (len(reorder_df[reorder_df[C_PRIORITY].str.contains("Critical", na=False)])
                        if reorder_df is not None and not reorder_df.empty and C_PRIORITY in reorder_df.columns else 0)
@@ -814,17 +831,18 @@ def render_sidebar():
           </div>
         </div>""", unsafe_allow_html=True)
 
-        # Nav
         st.markdown("<div style='font-size:.68rem;color:#9ca3af;text-transform:uppercase;letter-spacing:.1em;margin-bottom:6px;'>Workspaces</div>", unsafe_allow_html=True)
         current_view = st.session_state.get("analytics_view","stock")
-        for key, (label, meta) in {"stock":("📊 Stock Overview","SWAG"),"purchase":("🛒 Purchase Analytics","PO"),"sales":("📈 Sales Analytics","SO")}.items():
+        for key, (label, _meta) in {
+            "stock":    ("📊 Stock Overview",    "SWAG"),
+            "purchase": ("🛒 Purchase Analytics", "PO"),
+            "sales":    ("📈 Sales Analytics",    "SO"),
+        }.items():
             if st.button(label, key=f"nav_{key}", use_container_width=True,
                          type="primary" if current_view==key else "secondary"):
                 st.session_state.analytics_view = key; st.rerun()
 
         st.markdown("<hr style='border-color:#e5e7eb;margin:.8rem 0;'>", unsafe_allow_html=True)
-
-        # Snapshots
         st.markdown("<div style='font-size:.68rem;color:#9ca3af;text-transform:uppercase;letter-spacing:.1em;margin-bottom:6px;'>Snapshots</div>", unsafe_allow_html=True)
         st.markdown(f"""
         <div style="background:#f9fafb;border:1px solid #e5e7eb;border-radius:12px;padding:.65rem .75rem;margin-bottom:.5rem;font-size:.72rem;">
@@ -854,23 +872,19 @@ def render_sidebar():
         </div>""", unsafe_allow_html=True)
 
         st.markdown("<hr style='border-color:#e5e7eb;margin:.8rem 0;'>", unsafe_allow_html=True)
-
-        # Settings
         st.markdown("<div style='font-size:.68rem;color:#9ca3af;text-transform:uppercase;letter-spacing:.1em;margin-bottom:6px;'>Search Settings</div>", unsafe_allow_html=True)
         st.session_state.low_stock_thresh = st.slider("Low Stock Threshold", 0, 50, st.session_state.low_stock_thresh)
-        st.session_state.search_exact     = st.checkbox("Exact Match",      value=st.session_state.search_exact)
-        st.session_state.show_transfers   = st.checkbox("Show Transfers",   value=st.session_state.show_transfers)
-        st.session_state.show_reorder     = st.checkbox("Show Reorder",     value=st.session_state.show_reorder)
+        st.session_state.search_exact     = st.checkbox("Exact Match",    value=st.session_state.search_exact)
+        st.session_state.show_transfers   = st.checkbox("Show Transfers", value=st.session_state.show_transfers)
+        st.session_state.show_reorder     = st.checkbox("Show Reorder",   value=st.session_state.show_reorder)
         with st.expander("⚙️ Reorder Settings"):
             st.session_state.reorder_mode        = st.selectbox("Mode", ["days_cover","reorder_point"],
                                                      index=0 if st.session_state.reorder_mode=="days_cover" else 1)
-            st.session_state.reorder_target_days = st.number_input("Target Days", min_value=1, max_value=365, value=st.session_state.reorder_target_days)
-            st.session_state.reorder_max_level   = st.number_input("Max Level",   min_value=0, value=st.session_state.reorder_max_level)
-            st.session_state.reorder_point       = st.number_input("Reorder Point",min_value=0, value=st.session_state.reorder_point)
+            st.session_state.reorder_target_days = st.number_input("Target Days",  min_value=1,   max_value=365, value=st.session_state.reorder_target_days)
+            st.session_state.reorder_max_level   = st.number_input("Max Level",    min_value=0,                  value=st.session_state.reorder_max_level)
+            st.session_state.reorder_point       = st.number_input("Reorder Point",min_value=0,                  value=st.session_state.reorder_point)
 
         st.markdown("<hr style='border-color:#e5e7eb;margin:.8rem 0;'>", unsafe_allow_html=True)
-
-        # System status
         st.markdown("<div style='font-size:.68rem;color:#9ca3af;text-transform:uppercase;letter-spacing:.1em;margin-bottom:6px;'>System Status</div>", unsafe_allow_html=True)
         stat  = st.session_state.get("sys_stats",{}).get("SWAG",{})
         cfg   = st.secrets.get("SWAG",{})
@@ -923,13 +937,14 @@ def show_stock():
       <div class="hero-center-title">SWAG DASHBOARD</div>
     </div>""", unsafe_allow_html=True)
 
-    # Search
+    # Search panel
     st.markdown("<div class='panel'><div class='panel-title'>Product search and filters</div><div class='panel-sub'>Search SWAG models and review stock / reorder.</div>", unsafe_allow_html=True)
-    code_input = st.text_area("Model codes (comma or newline separated)", height=70, placeholder="e.g. ABC-001, DEF-002", key="code_input_area")
+    code_input = st.text_area("Model codes (comma or newline separated)", height=70,
+                               placeholder="e.g. ABC-001, DEF-002", key="code_input_area")
     col_btn, col_low, col_exact = st.columns([2,1,1])
-    with col_btn:    search_clicked = st.button("🔍 Run Search", type="primary", use_container_width=True, key="search_btn")
-    with col_low:    st.session_state.low_stock_thresh = st.number_input("Low stock ≤", min_value=0, value=st.session_state.low_stock_thresh, key="low_inp")
-    with col_exact:  st.session_state.search_exact     = st.checkbox("Exact match", value=st.session_state.search_exact, key="exact_cb")
+    with col_btn:   search_clicked = st.button("🔍 Run Search", type="primary", use_container_width=True, key="search_btn")
+    with col_low:   st.session_state.low_stock_thresh = st.number_input("Low stock ≤", min_value=0, value=st.session_state.low_stock_thresh, key="low_inp")
+    with col_exact: st.session_state.search_exact     = st.checkbox("Exact match", value=st.session_state.search_exact, key="exact_cb")
     st.markdown("</div>", unsafe_allow_html=True)
 
     if search_clicked:
@@ -952,7 +967,8 @@ def show_stock():
 
     total_df = st.session_state.get("total_df")
     if total_df is None or total_df.empty:
-        if st.session_state.get("last_run"): st.markdown("<div class='empty-state'>ℹ️ No data returned.</div>", unsafe_allow_html=True)
+        if st.session_state.get("last_run"):
+            st.markdown("<div class='empty-state'>ℹ️ No data returned.</div>", unsafe_allow_html=True)
         return
 
     st.markdown("<hr class='swag-divider'>", unsafe_allow_html=True)
@@ -977,7 +993,8 @@ def show_stock():
         st.markdown("<div class='panel'><div class='panel-title'>Category wise stock</div><div class='panel-sub'>On-hand quantity by category.</div>", unsafe_allow_html=True)
         if C_CATEGORY in total_df.columns:
             agg = total_df.groupby(C_CATEGORY)[C_ON_HAND].sum().reset_index().nlargest(8, C_ON_HAND)
-            fig = px.bar(agg, x=C_CATEGORY, y=C_ON_HAND, color_discrete_sequence=["#60a5fa","#34d399","#fbbf24","#f97316"], template="plotly_white")
+            fig = px.bar(agg, x=C_CATEGORY, y=C_ON_HAND,
+                         color_discrete_sequence=["#60a5fa","#34d399","#fbbf24","#f97316"], template="plotly_white")
             fig.update_traces(marker_cornerradius=6, marker_line_width=0, width=0.6)
             st.plotly_chart(_light(fig), use_container_width=True, key="c1")
         st.markdown("</div>", unsafe_allow_html=True)
@@ -985,8 +1002,10 @@ def show_stock():
     with cc2:
         st.markdown("<div class='panel'><div class='panel-title'>Brand share</div><div class='panel-sub'>Stock distribution by system.</div>", unsafe_allow_html=True)
         agg2 = total_df.groupby(C_SYSTEM)[C_ON_HAND].sum().reset_index()
-        fig2 = px.pie(agg2, names=C_SYSTEM, values=C_ON_HAND, hole=0.58, color_discrete_sequence=PALETTE, template="plotly_white")
-        fig2.update_traces(textposition="inside", textinfo="percent+label", marker=dict(line=dict(color="#fff", width=2)))
+        fig2 = px.pie(agg2, names=C_SYSTEM, values=C_ON_HAND, hole=0.58,
+                      color_discrete_sequence=PALETTE, template="plotly_white")
+        fig2.update_traces(textposition="inside", textinfo="percent+label",
+                           marker=dict(line=dict(color="#fff", width=2)))
         st.plotly_chart(_light(fig2), use_container_width=True, key="c2")
         st.markdown("</div>", unsafe_allow_html=True)
 
@@ -995,7 +1014,8 @@ def show_stock():
         st.markdown("<div class='panel'><div class='panel-title'>Branch coverage</div><div class='panel-sub'>Total stock by branch.</div>", unsafe_allow_html=True)
         if branch_df is not None and not branch_df.empty:
             agg3 = branch_df.groupby(C_BRANCH)[C_ON_HAND].sum().reset_index().nlargest(10, C_ON_HAND)
-            fig3 = px.bar(agg3, x=C_BRANCH, y=C_ON_HAND, color_discrete_sequence=["#0ea5e9"], template="plotly_white")
+            fig3 = px.bar(agg3, x=C_BRANCH, y=C_ON_HAND,
+                          color_discrete_sequence=["#0ea5e9"], template="plotly_white")
             fig3.update_traces(marker_cornerradius=6, marker_line_width=0)
             st.plotly_chart(_light(fig3), use_container_width=True, key="c3")
         else:
@@ -1018,7 +1038,7 @@ def show_stock():
             st.markdown("<div class='empty-state'>No days-left data.</div>", unsafe_allow_html=True)
         st.markdown("</div>", unsafe_allow_html=True)
 
-    # Tables
+    # Tables via tabs
     st.markdown("<hr class='swag-divider'>", unsafe_allow_html=True)
     tab_labels = ["📊 Total Stock","🏪 By Branch"]
     if st.session_state.show_transfers: tab_labels.append("🔄 Transfers")
@@ -1128,7 +1148,8 @@ def show_purchase():
     with pc1:
         st.markdown("<div class='panel'><div class='panel-title'>Top vendors</div><div class='panel-sub'>Purchase subtotal by vendor.</div>", unsafe_allow_html=True)
         va = po_df.groupby(C_VENDOR)[C_SUBTOTAL].sum().reset_index().nlargest(6, C_SUBTOTAL)
-        fig = px.bar(va, x=C_SUBTOTAL, y=C_VENDOR, orientation="h", color_discrete_sequence=PALETTE, template="plotly_white")
+        fig = px.bar(va, x=C_SUBTOTAL, y=C_VENDOR, orientation="h",
+                     color_discrete_sequence=PALETTE, template="plotly_white")
         fig.update_traces(marker_cornerradius=6, marker_line_width=0)
         st.plotly_chart(_light(fig), use_container_width=True, key="poc1")
         st.markdown("</div>", unsafe_allow_html=True)
@@ -1136,8 +1157,10 @@ def show_purchase():
     with pc2:
         st.markdown("<div class='panel'><div class='panel-title'>Purchase by category</div><div class='panel-sub'>Quantity by category.</div>", unsafe_allow_html=True)
         ca = po_df.groupby(C_CATEGORY)[C_QTY_PURCHASED].sum().reset_index().nlargest(6, C_QTY_PURCHASED)
-        fig2 = px.pie(ca, names=C_CATEGORY, values=C_QTY_PURCHASED, hole=0.58, color_discrete_sequence=PALETTE, template="plotly_white")
-        fig2.update_traces(textposition="inside", textinfo="percent+label", marker=dict(line=dict(color="#fff", width=2)))
+        fig2 = px.pie(ca, names=C_CATEGORY, values=C_QTY_PURCHASED, hole=0.58,
+                      color_discrete_sequence=PALETTE, template="plotly_white")
+        fig2.update_traces(textposition="inside", textinfo="percent+label",
+                           marker=dict(line=dict(color="#fff", width=2)))
         st.plotly_chart(_light(fig2), use_container_width=True, key="poc2")
         st.markdown("</div>", unsafe_allow_html=True)
 
@@ -1147,7 +1170,8 @@ def show_purchase():
         daily = po_df.copy(); daily["_d"] = pd.to_datetime(daily[C_DATE], errors="coerce").dt.date
         da = daily.groupby("_d")[C_SUBTOTAL].sum().reset_index(); da.columns = ["Date","Spend"]
         if not da.empty:
-            fig3 = px.area(da, x="Date", y="Spend", color_discrete_sequence=["#10b981"], template="plotly_white")
+            fig3 = px.area(da, x="Date", y="Spend",
+                           color_discrete_sequence=["#10b981"], template="plotly_white")
             fig3.update_traces(fill="tozeroy", fillcolor="rgba(16,185,129,.14)")
             st.plotly_chart(_light(fig3), use_container_width=True, key="poc3")
         st.markdown("</div>", unsafe_allow_html=True)
@@ -1155,7 +1179,8 @@ def show_purchase():
     with pc4:
         st.markdown("<div class='panel'><div class='panel-title'>Top vendors by volume</div><div class='panel-sub'>Units purchased per vendor.</div>", unsafe_allow_html=True)
         vv = po_df.groupby(C_VENDOR)[C_QTY_PURCHASED].sum().reset_index().nlargest(8, C_QTY_PURCHASED)
-        fig4 = px.bar(vv, x=C_VENDOR, y=C_QTY_PURCHASED, color_discrete_sequence=PALETTE, template="plotly_white")
+        fig4 = px.bar(vv, x=C_VENDOR, y=C_QTY_PURCHASED,
+                      color_discrete_sequence=PALETTE, template="plotly_white")
         fig4.update_traces(marker_cornerradius=6, marker_line_width=0)
         st.plotly_chart(_light(fig4), use_container_width=True, key="poc4")
         st.markdown("</div>", unsafe_allow_html=True)
@@ -1221,7 +1246,8 @@ def show_sales():
     with sc1:
         st.markdown("<div class='panel'><div class='panel-title'>Top models by sales</div><div class='panel-sub'>Qty sold per model.</div>", unsafe_allow_html=True)
         ma = sa_df.groupby(C_MODEL)[C_QTY].sum().reset_index().nlargest(10, C_QTY)
-        fig = px.bar(ma, x=C_MODEL, y=C_QTY, color_discrete_sequence=["#f97316","#22c55e"], template="plotly_white")
+        fig = px.bar(ma, x=C_MODEL, y=C_QTY,
+                     color_discrete_sequence=["#f97316","#22c55e"], template="plotly_white")
         fig.update_traces(marker_cornerradius=6, marker_line_width=0)
         st.plotly_chart(_light(fig), use_container_width=True, key="sc1")
         st.markdown("</div>", unsafe_allow_html=True)
@@ -1231,7 +1257,8 @@ def show_sales():
         daily = sa_df.copy(); daily["_d"] = pd.to_datetime(daily[C_DATE], errors="coerce").dt.date
         da = daily.groupby("_d")[C_SUBTOTAL].sum().reset_index(); da.columns = ["Date","Revenue"]
         if not da.empty:
-            fig2 = px.area(da, x="Date", y="Revenue", color_discrete_sequence=["#22c55e"], template="plotly_white")
+            fig2 = px.area(da, x="Date", y="Revenue",
+                           color_discrete_sequence=["#22c55e"], template="plotly_white")
             fig2.update_traces(fill="tozeroy", fillcolor="rgba(34,197,94,.15)")
             st.plotly_chart(_light(fig2), use_container_width=True, key="sc2")
         st.markdown("</div>", unsafe_allow_html=True)
@@ -1240,15 +1267,18 @@ def show_sales():
     with sc3:
         st.markdown("<div class='panel'><div class='panel-title'>Customer mix</div><div class='panel-sub'>Revenue by customer.</div>", unsafe_allow_html=True)
         ca = sa_df.groupby(C_CUSTOMER)[C_SUBTOTAL].sum().reset_index().nlargest(8, C_SUBTOTAL)
-        fig3 = px.pie(ca, names=C_CUSTOMER, values=C_SUBTOTAL, hole=0.58, color_discrete_sequence=PALETTE, template="plotly_white")
-        fig3.update_traces(textposition="inside", textinfo="percent+label", marker=dict(line=dict(color="#fff", width=2)))
+        fig3 = px.pie(ca, names=C_CUSTOMER, values=C_SUBTOTAL, hole=0.58,
+                      color_discrete_sequence=PALETTE, template="plotly_white")
+        fig3.update_traces(textposition="inside", textinfo="percent+label",
+                           marker=dict(line=dict(color="#fff", width=2)))
         st.plotly_chart(_light(fig3), use_container_width=True, key="sc3")
         st.markdown("</div>", unsafe_allow_html=True)
 
     with sc4:
         st.markdown("<div class='panel'><div class='panel-title'>Top customers by volume</div><div class='panel-sub'>Units sold per customer.</div>", unsafe_allow_html=True)
         cv = sa_df.groupby(C_CUSTOMER)[C_QTY].sum().reset_index().nlargest(8, C_QTY)
-        fig4 = px.bar(cv, x=C_CUSTOMER, y=C_QTY, color_discrete_sequence=PALETTE, template="plotly_white")
+        fig4 = px.bar(cv, x=C_CUSTOMER, y=C_QTY,
+                      color_discrete_sequence=PALETTE, template="plotly_white")
         fig4.update_traces(marker_cornerradius=6, marker_line_width=0)
         st.plotly_chart(_light(fig4), use_container_width=True, key="sc4")
         st.markdown("</div>", unsafe_allow_html=True)
@@ -1260,7 +1290,7 @@ def show_sales():
     with es2: st.download_button("⬇️ Export Excel", to_excel(sa_df), dl_name("sales","xlsx"), "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet", use_container_width=True)
 
 # ─────────────────────────────────────────────────────────────────────────────
-# MAIN ROUTER
+# MAIN
 # ─────────────────────────────────────────────────────────────────────────────
 def show_dashboard():
     st.markdown(_css(), unsafe_allow_html=True)
@@ -1270,8 +1300,14 @@ def show_dashboard():
     elif view == "sales":    show_sales()
     else:                    show_stock()
 
-restore_session()
-if not st.session_state.authenticated:
-    show_login()
-else:
-    show_dashboard()
+
+def main():
+    restore_session()
+    if not st.session_state.authenticated:
+        show_login()
+    else:
+        show_dashboard()
+
+
+if __name__ == "__main__":
+    main()
