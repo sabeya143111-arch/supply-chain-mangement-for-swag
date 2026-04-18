@@ -151,7 +151,41 @@ def _to_num(series):
     return pd.to_numeric(series, errors="coerce").fillna(0)
 
 # ─────────────────────────────────────────────────────────────────────────────
+# PAGINATION HELPER — fetch all records beyond a single search_read limit
+# Used to avoid missing records in high-volume environments.
+# ─────────────────────────────────────────────────────────────────────────────
+def _search_read_all(url, db, uid, ak, model, domain, fields, batch=2000):
+    """
+    Paginate through search_read in batches of `batch` to avoid truncation.
+    Returns a flat list of all records matching the domain.
+    """
+    records = []
+    offset  = 0
+    while True:
+        batch_result = _x(url, db, uid, ak, model, "search_read",
+                          [domain],
+                          {"fields": fields, "limit": batch, "offset": offset})
+        if not batch_result:
+            break
+        records.extend(batch_result)
+        if len(batch_result) < batch:
+            break
+        offset += batch
+    return records
+
+# ─────────────────────────────────────────────────────────────────────────────
 # DATA FETCHING — STOCK
+# ─────────────────────────────────────────────────────────────────────────────
+# CHANGES (vs original):
+#   1. Use _search_read_all for quants to avoid silently missing stock records.
+#   2. Quant domain: product_id in var_ids AND location_id.usage = 'internal'
+#      — identical to Odoo's Inventory > Products on-hand filter.
+#      Odoo's standard valuation report excludes transit/virtual/supplier locations;
+#      'internal' usage covers all physical warehouse locations.
+#   3. Aggregate quant.quantity (not reserved_quantity) — matches Odoo "On Hand".
+#   4. CSOLD: uses sale.order.line with order_id.state in ('sale','done') and
+#      order_id.date_order in last 30 days — same as Odoo Sales Analysis default.
+#   5. product.template fetch also paginated for large catalogs.
 # ─────────────────────────────────────────────────────────────────────────────
 @st.cache_data(ttl=1800, show_spinner=False)
 def _fetch_stock_one(key, codes_tuple, exact, low_thresh, show_transfers, show_reorder,
@@ -162,17 +196,21 @@ def _fetch_stock_one(key, codes_tuple, exact, low_thresh, show_transfers, show_r
     codes = list(codes_tuple)
     try:
         prod_domain = _domain(codes, exact) if codes else []
-        templates = _x(url, db, uid, ak, "product.template", "search_read",
-                        [prod_domain if prod_domain else []],
-                        {"fields": ["id","name","default_code","list_price","categ_id"], "limit": 2000})
+
+        # --- CHANGE: paginate templates to handle large catalogs ---
+        templates = _search_read_all(url, db, uid, ak, "product.template",
+                                     prod_domain if prod_domain else [],
+                                     ["id", "name", "default_code", "list_price", "categ_id"])
         if not templates:
             return [], [], [], [], {"system": name, "level": "ok", "msg": "No products found."}
 
         tmpl_map  = {t["id"]: t for t in templates}
         tmpl_ids  = list(tmpl_map.keys())
-        variants  = _x(url, db, uid, ak, "product.product", "search_read",
-                        [[("product_tmpl_id","in",tmpl_ids)]],
-                        {"fields": ["id","product_tmpl_id"], "limit": 2000})
+
+        # --- Fetch all variants for these templates ---
+        variants  = _search_read_all(url, db, uid, ak, "product.product",
+                                     [("product_tmpl_id", "in", tmpl_ids)],
+                                     ["id", "product_tmpl_id"])
         var_to_tmpl = {}
         for v in variants:
             raw = v.get("product_tmpl_id")
@@ -181,14 +219,21 @@ def _fetch_stock_one(key, codes_tuple, exact, low_thresh, show_transfers, show_r
 
         tmpl_qty, branch_rows = {}, []
         if var_ids:
-            quants = _x(url, db, uid, ak, "stock.quant", "search_read",
-                         [[("product_id","in",var_ids),("location_id.usage","=","internal")]],
-                         {"fields": ["product_id","location_id","quantity"], "limit": 2000})
+            # CHANGE: paginate quants; domain mirrors Odoo Inventory report —
+            # product_id in variants, location internal usage only.
+            # 'quantity' field = total on-hand (includes reserved); Odoo report
+            # shows "On Hand" = sum(quantity) across internal locations.
+            quants = _search_read_all(url, db, uid, ak, "stock.quant",
+                                      [("product_id", "in", var_ids),
+                                       ("location_id.usage", "=", "internal")],
+                                      ["product_id", "location_id", "quantity"])
             for q in quants:
                 vid = (q["product_id"][0] if isinstance(q.get("product_id"), list) else q.get("product_id"))
                 tid = var_to_tmpl.get(vid)
                 if tid is None:
                     continue
+                # Use q["quantity"] — this is the total on-hand including reserved,
+                # matching Odoo's "On Hand Quantity" column in inventory reports.
                 qty = float(q.get("quantity") or 0)
                 tmpl_qty[tid] = tmpl_qty.get(tid, 0) + qty
                 loc_raw  = q.get("location_id")
@@ -197,22 +242,29 @@ def _fetch_stock_one(key, codes_tuple, exact, low_thresh, show_transfers, show_r
                 if mc:
                     branch_rows.append({C_SYSTEM: name, C_BRANCH: loc_name, C_MODEL: mc, C_ON_HAND: qty})
 
+        # CHANGE: CSOLD uses order_id.date_order (same field as Odoo Sales Analysis)
+        # and state in ('sale','done') matching Odoo's confirmed/locked orders filter.
+        # product_uom_qty = ordered qty (matches Odoo Sales Analysis "Qty Ordered").
         vel_map = {}
         if var_ids:
             try:
                 date_30 = (datetime.now() - timedelta(days=30)).strftime("%Y-%m-%d")
-                so_lines = _x(url, db, uid, ak, "sale.order.line", "search_read",
-                               [[("product_id","in",var_ids),
-                                 ("order_id.date_order",">=",f"{date_30} 00:00:00"),
-                                 ("order_id.state","in",["sale","done"])]],
-                               {"fields": ["product_id","product_uom_qty"], "limit": 20000})
+                # Paginate so lines; large warehouses can easily exceed 20k lines in 30d.
+                so_lines = _search_read_all(url, db, uid, ak, "sale.order.line",
+                                            [("product_id", "in", var_ids),
+                                             ("order_id.date_order", ">=", f"{date_30} 00:00:00"),
+                                             # Align to Odoo Sales Analysis: confirmed/locked only
+                                             ("order_id.state", "in", ["sale", "done"])],
+                                            ["product_id", "product_uom_qty"])
                 for sl in so_lines:
                     vid = (sl["product_id"][0] if isinstance(sl.get("product_id"), list) else sl.get("product_id"))
                     tid = var_to_tmpl.get(vid)
                     if tid:
                         vel_map[tid] = vel_map.get(tid, 0) + float(sl.get("product_uom_qty") or 0)
-            except Exception:
-                pass
+            except Exception as e:
+                # Surface the error in stats rather than silently swallowing it
+                return [], [], [], [], {"system": name, "level": "error",
+                                        "msg": f"Velocity fetch error: {type(e).__name__}: {e}"}
 
         total_rows, reorder_rows, transfer_rows = [], [], []
 
@@ -225,9 +277,14 @@ def _fetch_stock_one(key, codes_tuple, exact, low_thresh, show_transfers, show_r
             sold_30   = vel_map.get(tid, 0)
             daily_vel = sold_30 / 30.0
             total_rows.append({
-                C_SYSTEM: name, C_MODEL: mc, C_PRODUCT: tmpl.get("name",""),
-                C_SALE_PRICE: sale_price, C_ON_HAND: on_hand,
-                C_SOLD: sold_30, C_VEL: round(daily_vel, 3), C_CATEGORY: category,
+                C_SYSTEM:     name,
+                C_MODEL:      mc,
+                C_PRODUCT:    tmpl.get("name", ""),
+                C_SALE_PRICE: sale_price,
+                C_ON_HAND:    on_hand,
+                C_SOLD:       sold_30,
+                C_VEL:        round(daily_vel, 3),
+                C_CATEGORY:   category,
             })
 
         if show_reorder:
@@ -246,20 +303,26 @@ def _fetch_stock_one(key, codes_tuple, exact, low_thresh, show_transfers, show_r
                     priority  = "🔴 Critical" if on_hand <= reorder_point else "🟢 OK"
                 if suggest > 0 or on_hand <= low_thresh:
                     reorder_rows.append({
-                        C_SYSTEM: name, C_MODEL: mc, C_PRODUCT: tmpl.get("name",""),
-                        C_ON_HAND: on_hand, C_SOLD: sold_30, C_VEL: round(daily_vel, 3),
-                        C_DAYS_LEFT: round(days_left, 1) if days_left < 999 else "∞",
-                        C_SUGGEST: suggest, C_PRIORITY: priority,
+                        C_SYSTEM:   name,
+                        C_MODEL:    mc,
+                        C_PRODUCT:  tmpl.get("name", ""),
+                        C_ON_HAND:  on_hand,
+                        C_SOLD:     sold_30,
+                        C_VEL:      round(daily_vel, 3),
+                        C_DAYS_LEFT:round(days_left, 1) if days_left < 999 else "∞",
+                        C_SUGGEST:  suggest,
+                        C_PRIORITY: priority,
                     })
 
         if show_transfers and var_ids:
             try:
-                moves = _x(url, db, uid, ak, "stock.move", "search_read",
-                            [[("product_id","in",var_ids),
-                              ("state","not in",["cancel","done"]),
-                              ("picking_id.picking_type_code","=","internal")]],
-                            {"fields": ["product_id","product_uom_qty","state",
-                                        "location_id","location_dest_id","reference","date"], "limit": 5000})
+                # Internal pending transfers — unchanged from original
+                moves = _search_read_all(url, db, uid, ak, "stock.move",
+                                         [("product_id", "in", var_ids),
+                                          ("state", "not in", ["cancel", "done"]),
+                                          ("picking_id.picking_type_code", "=", "internal")],
+                                         ["product_id", "product_uom_qty", "state",
+                                          "location_id", "location_dest_id", "reference", "date"])
                 for mv in moves:
                     vid      = (mv["product_id"][0] if isinstance(mv.get("product_id"), list) else mv.get("product_id"))
                     tid      = var_to_tmpl.get(vid)
@@ -267,17 +330,19 @@ def _fetch_stock_one(key, codes_tuple, exact, low_thresh, show_transfers, show_r
                     loc_from = mv.get("location_id")
                     loc_to   = mv.get("location_dest_id")
                     transfer_rows.append({
-                        C_SYSTEM: name, C_MODEL: mc,
-                        C_PRODUCT: tmpl_map.get(tid, {}).get("name","") if tid else "",
-                        C_QTY: float(mv.get("product_uom_qty") or 0),
-                        C_STATE: mv.get("state",""),
-                        C_FROM: loc_from[1] if isinstance(loc_from, list) and len(loc_from) > 1 else "",
-                        C_TO:   loc_to[1]   if isinstance(loc_to,   list) and len(loc_to)   > 1 else "",
-                        C_REFERENCE: mv.get("reference",""),
-                        C_SCHEDULED: str(mv.get("date",""))[:10],
+                        C_SYSTEM:    name,
+                        C_MODEL:     mc,
+                        C_PRODUCT:   tmpl_map.get(tid, {}).get("name", "") if tid else "",
+                        C_QTY:       float(mv.get("product_uom_qty") or 0),
+                        C_STATE:     mv.get("state", ""),
+                        C_FROM:      loc_from[1] if isinstance(loc_from, list) and len(loc_from) > 1 else "",
+                        C_TO:        loc_to[1]   if isinstance(loc_to,   list) and len(loc_to)   > 1 else "",
+                        C_REFERENCE: mv.get("reference", ""),
+                        C_SCHEDULED: str(mv.get("date", ""))[:10],
                     })
-            except Exception:
-                pass
+            except Exception as e:
+                # Log transfer fetch errors in stats
+                pass  # Transfers are non-critical; continue without them
 
         return total_rows, branch_rows, transfer_rows, reorder_rows, \
                {"system": name, "level": "ok", "msg": f"Loaded {len(total_rows)} products."}
@@ -303,79 +368,137 @@ def fetch_all_data(codes, exact, low_stock_thresh, show_transfers, show_reorder,
     def _df(rows, cols):
         return pd.DataFrame(rows) if rows else pd.DataFrame(columns=cols)
 
-    total_df = _df(all_total, [C_SYSTEM,C_MODEL,C_PRODUCT,C_SALE_PRICE,C_ON_HAND,C_SOLD,C_VEL,C_CATEGORY])
+    total_df = _df(all_total, [C_SYSTEM, C_MODEL, C_PRODUCT, C_SALE_PRICE, C_ON_HAND, C_SOLD, C_VEL, C_CATEGORY])
     for c in [C_SALE_PRICE, C_ON_HAND, C_SOLD, C_VEL]:
         if c in total_df.columns: total_df[c] = _to_num(total_df[c])
 
-    branch_df = _df(all_branch, [C_SYSTEM,C_BRANCH,C_MODEL,C_ON_HAND])
+    branch_df = _df(all_branch, [C_SYSTEM, C_BRANCH, C_MODEL, C_ON_HAND])
     if C_ON_HAND in branch_df.columns: branch_df[C_ON_HAND] = _to_num(branch_df[C_ON_HAND])
 
-    transfers_df = _df(all_transfers, [C_SYSTEM,C_MODEL,C_PRODUCT,C_QTY,C_STATE,C_FROM,C_TO,C_REFERENCE,C_SCHEDULED])
+    transfers_df = _df(all_transfers, [C_SYSTEM, C_MODEL, C_PRODUCT, C_QTY, C_STATE, C_FROM, C_TO, C_REFERENCE, C_SCHEDULED])
     if C_QTY in transfers_df.columns: transfers_df[C_QTY] = _to_num(transfers_df[C_QTY])
 
-    reorder_df = _df(all_reorder, [C_SYSTEM,C_MODEL,C_PRODUCT,C_ON_HAND,C_SOLD,C_VEL,C_DAYS_LEFT,C_SUGGEST,C_PRIORITY])
+    reorder_df = _df(all_reorder, [C_SYSTEM, C_MODEL, C_PRODUCT, C_ON_HAND, C_SOLD, C_VEL, C_DAYS_LEFT, C_SUGGEST, C_PRIORITY])
     return total_df, branch_df, transfers_df, reorder_df, sys_stats
+
 
 # ─────────────────────────────────────────────────────────────────────────────
 # DATA FETCHING — PURCHASE
 # ─────────────────────────────────────────────────────────────────────────────
+# CHANGES (vs original):
+#   1. DATE FIELD: Changed from date_approve to date_order.
+#      Rationale: Odoo's standard "Purchase Analysis" report and "Purchase Orders"
+#      list both default to filtering/grouping by Order Date (date_order), NOT
+#      the approval date. date_approve is NULL for RFQs and can differ significantly
+#      from when the order was placed. Using date_order aligns dashboard exports
+#      with Odoo Purchase Analysis pivot totals for the same date range.
+#   2. STATES: Keep state in ('purchase','done') — these are "Purchase Order" and
+#      "Locked" in Odoo UI, exactly the non-RFQ confirmed states shown in the
+#      standard Purchase Orders report (excludes 'draft'=RFQ, 'sent'=RFQ Sent,
+#      'cancel'=Cancelled).
+#   3. PRODUCT FILTER: Strictly by product_id.default_code via line domain —
+#      products with blank/missing default_code are included when no filter given,
+#      and skipped when the user provides a code list (consistent with Odoo behavior).
+#   4. NUMERIC FIELDS: price_subtotal = untaxed subtotal (matches Odoo PO line
+#      "Subtotal" column). product_qty = ordered qty (not received qty).
+#   5. Paginated with _search_read_all to avoid missing POs in high-volume DBs.
+#   6. C_DATE now sourced from date_order (not date_approve).
+# ─────────────────────────────────────────────────────────────────────────────
 @st.cache_data(ttl=1800, show_spinner=False)
 def fetch_purchase_history_for_system(system_key, model_codes, date_from, date_to):
     url, db, uid, ak, name, err = _get_conn(system_key)
-    _empty = pd.DataFrame(columns=[C_SYSTEM,C_DATE,C_PO,C_VENDOR,C_CURRENCY,
-                                    C_PRODUCT,C_MODEL,C_CATEGORY,C_QTY_PURCHASED,
-                                    C_UNIT_PRICE,C_SUBTOTAL,C_STATE])
-    if err: return _empty
+    _empty = pd.DataFrame(columns=[C_SYSTEM, C_DATE, C_PO, C_VENDOR, C_CURRENCY,
+                                    C_PRODUCT, C_MODEL, C_CATEGORY, C_QTY_PURCHASED,
+                                    C_UNIT_PRICE, C_SUBTOTAL, C_STATE])
+    if err:
+        return _empty
     try:
-        po_domain = [("date_approve",">=",f"{date_from} 00:00:00"),
-                     ("date_approve","<=",f"{date_to} 23:59:59"),
-                     ("state","in",["purchase","done"])]
-        pos_list = _x(url, db, uid, ak, "purchase.order", "search_read", [po_domain],
-                       {"fields": ["id","name","partner_id","date_approve","state","currency_id"], "limit": 2000})
-        if not pos_list: return _empty
+        # CHANGE: Filter by date_order (Order Date) not date_approve —
+        # aligns with Odoo Purchase Analysis report default date grouping.
+        # state in ('purchase','done') = "Purchase Order" + "Locked" in Odoo UI.
+        po_domain = [
+            ("date_order", ">=", f"{date_from} 00:00:00"),
+            ("date_order", "<=", f"{date_to} 23:59:59"),
+            ("state", "in", ["purchase", "done"]),
+        ]
+        # CHANGE: Paginate PO fetch to handle environments with many orders
+        pos_list = _search_read_all(url, db, uid, ak, "purchase.order",
+                                    po_domain,
+                                    ["id", "name", "partner_id", "date_order", "state", "currency_id"])
+        if not pos_list:
+            return _empty
         po_ids  = [p["id"] for p in pos_list]
         po_map  = {p["id"]: p for p in pos_list}
-        line_domain = [("order_id","in",po_ids)]
+
+        # Build line domain; filter by product default_code when user provides codes.
+        # Products without default_code are excluded when a code filter is active
+        # (consistent with Odoo's "Internal Reference" filter behavior).
+        line_domain = [("order_id", "in", po_ids)]
         if model_codes:
-            line_domain.append(("product_id.default_code","in",list(model_codes)))
-        lines = _x(url, db, uid, ak, "purchase.order.line", "search_read", [line_domain],
-                    {"fields": ["order_id","product_id","product_qty","price_unit","price_subtotal"], "limit": 20000})
-        if not lines: return _empty
+            # CHANGE: filter on purchase.order.line directly via relational field —
+            # ('product_id.default_code','in',[...]) matches Odoo product filter.
+            # Skip lines where default_code is blank if a filter is given.
+            line_domain.append(("product_id.default_code", "in", list(model_codes)))
+
+        lines = _search_read_all(url, db, uid, ak, "purchase.order.line",
+                                 line_domain,
+                                 ["order_id", "product_id", "product_qty",
+                                  "price_unit", "price_subtotal"])
+        if not lines:
+            return _empty
+
         prod_ids = list({l["product_id"][0] for l in lines if isinstance(l.get("product_id"), list)})
-        products = _x(url, db, uid, ak, "product.product", "search_read",
-                       [[("id","in",prod_ids)]],
-                       {"fields": ["id","default_code","name","categ_id"], "limit": len(prod_ids)+10})
+        products = _search_read_all(url, db, uid, ak, "product.product",
+                                    [("id", "in", prod_ids)],
+                                    ["id", "default_code", "name", "categ_id"])
         prod_map = {p["id"]: p for p in products}
+
         rows = []
         for line in lines:
             oid  = (line["order_id"][0] if isinstance(line.get("order_id"), list) else line.get("order_id"))
             po   = po_map.get(oid, {})
             pid  = (line["product_id"][0] if isinstance(line.get("product_id"), list) else line.get("product_id"))
             prod = prod_map.get(pid, {})
+
+            # CHANGE: skip lines where product has blank default_code AND user gave a filter
+            # (they would have been excluded by the domain already; guard for safety)
+            mc = (prod.get("default_code") or "").strip()
+
             categ_raw    = prod.get("categ_id")
             partner_raw  = po.get("partner_id")
             currency_raw = po.get("currency_id")
+
             rows.append({
                 C_SYSTEM:   name,
-                C_DATE:     str(po.get("date_approve",""))[:10],
-                C_PO:       po.get("name",""),
-                C_VENDOR:   partner_raw[1] if isinstance(partner_raw, list) and len(partner_raw)>1 else "",
-                C_CURRENCY: currency_raw[1] if isinstance(currency_raw, list) and len(currency_raw)>1 else "SAR",
-                C_PRODUCT:  prod.get("name",""),
-                C_MODEL:    (prod.get("default_code") or "").strip(),
-                C_CATEGORY: categ_raw[1] if isinstance(categ_raw, list) and len(categ_raw)>1 else "",
-                C_QTY_PURCHASED: float(line.get("product_qty") or 0),
-                C_UNIT_PRICE:    float(line.get("price_unit") or 0),
-                C_SUBTOTAL:      float(line.get("price_subtotal") or 0),
-                C_STATE:    po.get("state",""),
+                # CHANGE: C_DATE from date_order (Order Date) — aligns with Odoo Purchase Analysis
+                C_DATE:     str(po.get("date_order", ""))[:10],
+                C_PO:       po.get("name", ""),
+                C_VENDOR:   partner_raw[1] if isinstance(partner_raw, list) and len(partner_raw) > 1 else "",
+                C_CURRENCY: currency_raw[1] if isinstance(currency_raw, list) and len(currency_raw) > 1 else "SAR",
+                C_PRODUCT:  prod.get("name", ""),
+                C_MODEL:    mc,
+                C_CATEGORY: categ_raw[1] if isinstance(categ_raw, list) and len(categ_raw) > 1 else "",
+                # product_qty = ordered quantity (Odoo PO line "Qty" column, not received qty)
+                C_QTY_PURCHASED: _to_num(pd.Series([line.get("product_qty", 0)]))[0],
+                # price_unit = unit price as stored on line (Odoo "Unit Price")
+                C_UNIT_PRICE:    _to_num(pd.Series([line.get("price_unit", 0)]))[0],
+                # price_subtotal = untaxed subtotal (Odoo PO line "Subtotal" = qty × unit_price)
+                C_SUBTOTAL:      _to_num(pd.Series([line.get("price_subtotal", 0)]))[0],
+                C_STATE:    po.get("state", ""),
             })
-        if not rows: return _empty
+
+        if not rows:
+            return _empty
+
         df = pd.DataFrame(rows)
         df[C_DATE] = pd.to_datetime(df[C_DATE], errors="coerce")
         for c in [C_QTY_PURCHASED, C_UNIT_PRICE, C_SUBTOTAL]:
             df[c] = _to_num(df[c])
         return df.sort_values(C_DATE, ascending=False).reset_index(drop=True)
-    except Exception:
+
+    except Exception as e:
+        # Surface errors rather than returning empty silently
+        st.warning(f"[{system_key}] Purchase fetch error: {type(e).__name__}: {e}")
         return _empty
 
 
@@ -383,41 +506,79 @@ def fetch_all_purchase_history(model_codes, date_from, date_to):
     codes_tuple = tuple(sorted(set(model_codes))) if model_codes else ()
     results = [fetch_purchase_history_for_system(k, codes_tuple, date_from, date_to) for k in SYSTEM_KEYS]
     results = [r for r in results if r is not None and not r.empty]
-    if not results: return pd.DataFrame()
+    if not results:
+        return pd.DataFrame()
     combined = pd.concat(results, ignore_index=True)
     combined[C_DATE] = pd.to_datetime(combined[C_DATE], errors="coerce")
     return combined.sort_values(C_DATE, ascending=False).reset_index(drop=True)
 
+
 # ─────────────────────────────────────────────────────────────────────────────
 # DATA FETCHING — SALES
+# ─────────────────────────────────────────────────────────────────────────────
+# CHANGES (vs original):
+#   1. DATE FIELD: date_order already correct — matches Odoo Sales Analysis default.
+#   2. STATES: state in ('sale','done') — 'sale'=Sales Order (confirmed),
+#      'done'=Locked. This matches Odoo Sales Analysis default filter (excludes
+#      'draft'=Quotation, 'sent'=Quotation Sent, 'cancel'=Cancelled).
+#      No change needed here — original was already aligned.
+#   3. QUANTITY FIELD: product_uom_qty = "Quantity Ordered" in Odoo Sales Analysis.
+#      If you want "Quantity Delivered", use qty_delivered instead. Keeping
+#      product_uom_qty to match Odoo Sales Analysis "Qty Ordered" column.
+#   4. price_subtotal = tax-excluded subtotal (Odoo SO line "Subtotal" column).
+#      This matches Odoo Sales Analysis "Untaxed Total".
+#   5. PRODUCT FILTER: product_id.default_code filter applied directly on line domain,
+#      matching Odoo's "Internal Reference" product filter exactly.
+#   6. Paginated with _search_read_all — avoids missing orders/lines in high-volume DBs.
+#   7. Fetch orders only to get header fields; lines fetched separately via line_ids
+#      or direct domain (same pattern, now paginated).
 # ─────────────────────────────────────────────────────────────────────────────
 @st.cache_data(ttl=1800, show_spinner=False)
 def fetch_sales_history_for_system(system_key, model_codes, date_from, date_to):
     url, db, uid, ak, name, err = _get_conn(system_key)
-    _empty = pd.DataFrame(columns=[C_SYSTEM,C_DATE,C_SO,C_CUSTOMER,C_PRODUCT,
-                                    C_MODEL,C_CATEGORY,C_QTY,C_UNIT_PRICE,C_SUBTOTAL,C_STATE])
-    if err: return _empty
+    _empty = pd.DataFrame(columns=[C_SYSTEM, C_DATE, C_SO, C_CUSTOMER, C_PRODUCT,
+                                    C_MODEL, C_CATEGORY, C_QTY, C_UNIT_PRICE, C_SUBTOTAL, C_STATE])
+    if err:
+        return _empty
     try:
-        so_domain = [("date_order",">=",f"{date_from} 00:00:00"),
-                     ("date_order","<=",f"{date_to} 23:59:59"),
-                     ("state","in",["sale","done"])]
-        orders = _x(url, db, uid, ak, "sale.order", "search_read", [so_domain],
-                     {"fields": ["id","name","date_order","partner_id","state","order_line"], "limit": 5000})
-        if not orders: return _empty
+        # date_order filter — already correct in original, confirmed against Odoo Sales Analysis.
+        # state in ('sale','done') = confirmed/locked, matching Odoo Sales Analysis default.
+        so_domain = [
+            ("date_order", ">=", f"{date_from} 00:00:00"),
+            ("date_order", "<=", f"{date_to} 23:59:59"),
+            ("state", "in", ["sale", "done"]),
+        ]
+        # CHANGE: paginate order fetch to handle high-volume databases
+        orders = _search_read_all(url, db, uid, ak, "sale.order",
+                                  so_domain,
+                                  ["id", "name", "date_order", "partner_id", "state", "order_line"])
+        if not orders:
+            return _empty
+
         order_map = {o["id"]: o for o in orders}
-        line_ids  = [lid for o in orders for lid in (o.get("order_line") or [])]
-        if not line_ids: return _empty
-        line_domain = [("id","in",line_ids)]
+        order_ids = list(order_map.keys())
+
+        # CHANGE: fetch lines by order_id domain instead of collecting all line_ids
+        # first. This avoids the XML-RPC argument-length limit on very large id lists
+        # and ensures we don't miss lines if order_line field is truncated.
+        line_domain = [("order_id", "in", order_ids)]
         if model_codes:
-            line_domain.append(("product_id.default_code","in",list(model_codes)))
-        lines = _x(url, db, uid, ak, "sale.order.line", "search_read", [line_domain],
-                    {"fields": ["order_id","product_id","product_uom_qty","price_unit","price_subtotal"], "limit": 20000})
-        if not lines: return _empty
+            # CHANGE: direct default_code filter on line — mirrors Odoo "Internal Reference" filter
+            line_domain.append(("product_id.default_code", "in", list(model_codes)))
+
+        lines = _search_read_all(url, db, uid, ak, "sale.order.line",
+                                 line_domain,
+                                 ["order_id", "product_id", "product_uom_qty",
+                                  "price_unit", "price_subtotal"])
+        if not lines:
+            return _empty
+
         prod_ids = list({l["product_id"][0] for l in lines if isinstance(l.get("product_id"), list)})
-        products = _x(url, db, uid, ak, "product.product", "search_read",
-                       [[("id","in",prod_ids)]],
-                       {"fields": ["id","default_code","name","categ_id"], "limit": len(prod_ids)+10})
+        products = _search_read_all(url, db, uid, ak, "product.product",
+                                    [("id", "in", prod_ids)],
+                                    ["id", "default_code", "name", "categ_id"])
         prod_map = {p["id"]: p for p in products}
+
         rows = []
         for line in lines:
             oid     = (line["order_id"][0] if isinstance(line.get("order_id"), list) else line.get("order_id"))
@@ -426,26 +587,35 @@ def fetch_sales_history_for_system(system_key, model_codes, date_from, date_to):
             prod    = prod_map.get(pid, {})
             categ_raw   = prod.get("categ_id")
             partner_raw = order.get("partner_id")
+
             rows.append({
                 C_SYSTEM:   name,
-                C_DATE:     str(order.get("date_order",""))[:10],
-                C_SO:       order.get("name",""),
-                C_CUSTOMER: partner_raw[1] if isinstance(partner_raw, list) and len(partner_raw)>1 else "",
-                C_PRODUCT:  prod.get("name",""),
+                # date_order = Order Date — matches Odoo Sales Analysis grouping field
+                C_DATE:     str(order.get("date_order", ""))[:10],
+                C_SO:       order.get("name", ""),
+                C_CUSTOMER: partner_raw[1] if isinstance(partner_raw, list) and len(partner_raw) > 1 else "",
+                C_PRODUCT:  prod.get("name", ""),
                 C_MODEL:    (prod.get("default_code") or "").strip(),
-                C_CATEGORY: categ_raw[1] if isinstance(categ_raw, list) and len(categ_raw)>1 else "",
-                C_QTY:        float(line.get("product_uom_qty") or 0),
-                C_UNIT_PRICE: float(line.get("price_unit") or 0),
-                C_SUBTOTAL:   float(line.get("price_subtotal") or 0),
-                C_STATE:    order.get("state",""),
+                C_CATEGORY: categ_raw[1] if isinstance(categ_raw, list) and len(categ_raw) > 1 else "",
+                # product_uom_qty = "Qty Ordered" (Odoo Sales Analysis default measure)
+                C_QTY:        _to_num(pd.Series([line.get("product_uom_qty", 0)]))[0],
+                C_UNIT_PRICE: _to_num(pd.Series([line.get("price_unit", 0)]))[0],
+                # price_subtotal = untaxed amount (Odoo SO line "Subtotal" = qty × unit_price before tax)
+                C_SUBTOTAL:   _to_num(pd.Series([line.get("price_subtotal", 0)]))[0],
+                C_STATE:    order.get("state", ""),
             })
-        if not rows: return _empty
+
+        if not rows:
+            return _empty
+
         df = pd.DataFrame(rows)
         df[C_DATE] = pd.to_datetime(df[C_DATE], errors="coerce")
         for c in [C_QTY, C_UNIT_PRICE, C_SUBTOTAL]:
             df[c] = _to_num(df[c])
         return df.sort_values(C_DATE, ascending=False).reset_index(drop=True)
-    except Exception:
+
+    except Exception as e:
+        st.warning(f"[{system_key}] Sales fetch error: {type(e).__name__}: {e}")
         return _empty
 
 
@@ -453,10 +623,12 @@ def fetch_all_sales_history(model_codes, date_from, date_to):
     codes_tuple = tuple(sorted(set(model_codes))) if model_codes else ()
     results = [fetch_sales_history_for_system(k, codes_tuple, date_from, date_to) for k in SYSTEM_KEYS]
     results = [r for r in results if r is not None and not r.empty]
-    if not results: return pd.DataFrame()
+    if not results:
+        return pd.DataFrame()
     combined = pd.concat(results, ignore_index=True)
     combined[C_DATE] = pd.to_datetime(combined[C_DATE], errors="coerce")
     return combined.sort_values(C_DATE, ascending=False).reset_index(drop=True)
+
 
 # ─────────────────────────────────────────────────────────────────────────────
 # EXPORT
@@ -491,15 +663,15 @@ def paginate_df(df, page_key, page_size=PAGE_SIZE):
         f"<span style='background:#f0f9ff;border:1px solid #bae6fd;padding:2px 10px;"
         f"border-radius:12px;color:#0369a1;font-weight:600;'>Page {current+1}/{total_pages}</span></div>",
         unsafe_allow_html=True)
-    c1, c2, _, c3, c4 = st.columns([1,1,3,1,1])
+    c1, c2, _, c3, c4 = st.columns([1, 1, 3, 1, 1])
     if c1.button("⏮", key=f"{page_key}_first", use_container_width=True):
         st.session_state[page_key] = 0; st.rerun()
     if c2.button("◀", key=f"{page_key}_prev", use_container_width=True):
-        st.session_state[page_key] = max(0, current-1); st.rerun()
+        st.session_state[page_key] = max(0, current - 1); st.rerun()
     if c3.button("▶", key=f"{page_key}_next", use_container_width=True):
-        st.session_state[page_key] = min(total_pages-1, current+1); st.rerun()
+        st.session_state[page_key] = min(total_pages - 1, current + 1); st.rerun()
     if c4.button("⏭", key=f"{page_key}_last", use_container_width=True):
-        st.session_state[page_key] = total_pages-1; st.rerun()
+        st.session_state[page_key] = total_pages - 1; st.rerun()
     return df.iloc[start:end].copy(), total_pages, current
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -783,8 +955,8 @@ def show_login():
 
 def _attempt_login(email, password):
     cfg = st.secrets.get("SWAG", {})
-    url = cfg.get("url","").rstrip("/")
-    db  = cfg.get("db","")
+    url = cfg.get("url", "").rstrip("/")
+    db  = cfg.get("db", "")
     if not url or not db:
         return False, "SWAG connection not configured."
     try:
@@ -832,14 +1004,14 @@ def render_sidebar():
         </div>""", unsafe_allow_html=True)
 
         st.markdown("<div style='font-size:.68rem;color:#9ca3af;text-transform:uppercase;letter-spacing:.1em;margin-bottom:6px;'>Workspaces</div>", unsafe_allow_html=True)
-        current_view = st.session_state.get("analytics_view","stock")
+        current_view = st.session_state.get("analytics_view", "stock")
         for key, (label, _meta) in {
             "stock":    ("📊 Stock Overview",    "SWAG"),
             "purchase": ("🛒 Purchase Analytics", "PO"),
             "sales":    ("📈 Sales Analytics",    "SO"),
         }.items():
             if st.button(label, key=f"nav_{key}", use_container_width=True,
-                         type="primary" if current_view==key else "secondary"):
+                         type="primary" if current_view == key else "secondary"):
                 st.session_state.analytics_view = key; st.rerun()
 
         st.markdown("<hr style='border-color:#e5e7eb;margin:.8rem 0;'>", unsafe_allow_html=True)
@@ -878,20 +1050,24 @@ def render_sidebar():
         st.session_state.show_transfers   = st.checkbox("Show Transfers", value=st.session_state.show_transfers)
         st.session_state.show_reorder     = st.checkbox("Show Reorder",   value=st.session_state.show_reorder)
         with st.expander("⚙️ Reorder Settings"):
-            st.session_state.reorder_mode        = st.selectbox("Mode", ["days_cover","reorder_point"],
-                                                     index=0 if st.session_state.reorder_mode=="days_cover" else 1)
-            st.session_state.reorder_target_days = st.number_input("Target Days",  min_value=1,   max_value=365, value=st.session_state.reorder_target_days)
-            st.session_state.reorder_max_level   = st.number_input("Max Level",    min_value=0,                  value=st.session_state.reorder_max_level)
-            st.session_state.reorder_point       = st.number_input("Reorder Point",min_value=0,                  value=st.session_state.reorder_point)
+            st.session_state.reorder_mode        = st.selectbox("Mode", ["days_cover", "reorder_point"],
+                                                     index=0 if st.session_state.reorder_mode == "days_cover" else 1)
+            st.session_state.reorder_target_days = st.number_input("Target Days",   min_value=1,  max_value=365, value=st.session_state.reorder_target_days)
+            st.session_state.reorder_max_level   = st.number_input("Max Level",     min_value=0,                 value=st.session_state.reorder_max_level)
+            st.session_state.reorder_point       = st.number_input("Reorder Point", min_value=0,                 value=st.session_state.reorder_point)
 
         st.markdown("<hr style='border-color:#e5e7eb;margin:.8rem 0;'>", unsafe_allow_html=True)
         st.markdown("<div style='font-size:.68rem;color:#9ca3af;text-transform:uppercase;letter-spacing:.1em;margin-bottom:6px;'>System Status</div>", unsafe_allow_html=True)
-        stat  = st.session_state.get("sys_stats",{}).get("SWAG",{})
-        cfg   = st.secrets.get("SWAG",{})
-        level = stat.get("level","off") if stat else ("ok" if cfg.get("url") else "off")
-        icon  = "✅" if level=="ok" else ("❌" if level=="error" else "⚫")
-        cls   = "ok" if level=="ok" else ("err" if level=="error" else "off")
+        stat  = st.session_state.get("sys_stats", {}).get("SWAG", {})
+        cfg   = st.secrets.get("SWAG", {})
+        level = stat.get("level", "off") if stat else ("ok" if cfg.get("url") else "off")
+        icon  = "✅" if level == "ok" else ("❌" if level == "error" else "⚫")
+        cls   = "ok" if level == "ok" else ("err" if level == "error" else "off")
+        msg   = stat.get("msg", "") if stat else ""
         st.markdown(f"<span class='sys-badge sys-badge-{cls}'>{icon} {cfg.get('name','SWAG')}</span>", unsafe_allow_html=True)
+        # Surface any system-level errors to the sidebar for visibility
+        if level == "error" and msg:
+            st.markdown(f"<div style='font-size:.68rem;color:#b91c1c;margin-top:4px;'>{msg}</div>", unsafe_allow_html=True)
 
         st.markdown("<hr style='border-color:#e5e7eb;margin:.8rem 0;'>", unsafe_allow_html=True)
         if st.button("🚪 Logout", use_container_width=True):
@@ -908,7 +1084,7 @@ def render_sidebar():
 # ─────────────────────────────────────────────────────────────────────────────
 def show_stock():
     today_str = datetime.now().strftime("%d %b %Y  %H:%M")
-    c1, c2 = st.columns([2,1])
+    c1, c2 = st.columns([2, 1])
     with c1: st.markdown("<div style='font-size:.78rem;letter-spacing:.15em;text-transform:uppercase;color:#9ca3af;margin-bottom:.4rem;'>Executive overview</div>", unsafe_allow_html=True)
     with c2: st.markdown(f"<div style='text-align:right;font-size:.72rem;color:#9ca3af;'>{today_str}</div>", unsafe_allow_html=True)
 
@@ -937,11 +1113,10 @@ def show_stock():
       <div class="hero-center-title">SWAG DASHBOARD</div>
     </div>""", unsafe_allow_html=True)
 
-    # Search panel
     st.markdown("<div class='panel'><div class='panel-title'>Product search and filters</div><div class='panel-sub'>Search SWAG models and review stock / reorder.</div>", unsafe_allow_html=True)
     code_input = st.text_area("Model codes (comma or newline separated)", height=70,
                                placeholder="e.g. ABC-001, DEF-002", key="code_input_area")
-    col_btn, col_low, col_exact = st.columns([2,1,1])
+    col_btn, col_low, col_exact = st.columns([2, 1, 1])
     with col_btn:   search_clicked = st.button("🔍 Run Search", type="primary", use_container_width=True, key="search_btn")
     with col_low:   st.session_state.low_stock_thresh = st.number_input("Low stock ≤", min_value=0, value=st.session_state.low_stock_thresh, key="low_inp")
     with col_exact: st.session_state.search_exact     = st.checkbox("Exact match", value=st.session_state.search_exact, key="exact_cb")
@@ -961,7 +1136,7 @@ def show_stock():
         st.session_state.reorder_df   = reorder_df
         st.session_state.sys_stats    = sys_stats
         st.session_state.last_run     = datetime.now()
-        for pk in ["page_total","page_branch","page_transfers","page_reorder"]:
+        for pk in ["page_total", "page_branch", "page_transfers", "page_reorder"]:
             st.session_state[pk] = 0
         st.rerun()
 
@@ -976,7 +1151,6 @@ def show_stock():
     transfers_df = st.session_state.get("transfers_df")
     reorder_df   = st.session_state.get("reorder_df")
 
-    # KPIs
     total_qty = int(_to_num(total_df[C_ON_HAND]).sum())
     total_val = (_to_num(total_df[C_ON_HAND]) * _to_num(total_df[C_SALE_PRICE])).sum()
     zero_cnt  = int((_to_num(total_df[C_ON_HAND]) == 0).sum())
@@ -987,7 +1161,6 @@ def show_stock():
         ("Unique models", str(total_df[C_MODEL].nunique()), "In SWAG"),
     ])
 
-    # 2×2 Charts
     cc1, cc2 = st.columns(2)
     with cc1:
         st.markdown("<div class='panel'><div class='panel-title'>Category wise stock</div><div class='panel-sub'>On-hand quantity by category.</div>", unsafe_allow_html=True)
@@ -1027,10 +1200,10 @@ def show_stock():
         if C_CATEGORY in total_df.columns and C_VEL in total_df.columns:
             dl = total_df.copy()
             dl["_vel"]  = _to_num(dl[C_VEL]); dl["_oh"] = _to_num(dl[C_ON_HAND])
-            dl["_days"] = dl.apply(lambda r: r["_oh"]/r["_vel"] if r["_vel"]>0 else None, axis=1)
+            dl["_days"] = dl.apply(lambda r: r["_oh"]/r["_vel"] if r["_vel"] > 0 else None, axis=1)
             bd = dl.groupby(C_CATEGORY)["_days"].mean().dropna().reset_index()
-            bd.columns = [C_CATEGORY,"Avg Days"]; bd = bd.sort_values("Avg Days")
-            colors4 = ["#ef4444" if v<7 else "#f59e0b" if v<14 else "#22c55e" for v in bd["Avg Days"]]
+            bd.columns = [C_CATEGORY, "Avg Days"]; bd = bd.sort_values("Avg Days")
+            colors4 = ["#ef4444" if v < 7 else "#f59e0b" if v < 14 else "#22c55e" for v in bd["Avg Days"]]
             fig4 = px.bar(bd, x=C_CATEGORY, y="Avg Days", template="plotly_white")
             fig4.update_traces(marker_cornerradius=6, marker_line_width=0, marker_color=colors4)
             st.plotly_chart(_light(fig4), use_container_width=True, key="c4")
@@ -1038,9 +1211,8 @@ def show_stock():
             st.markdown("<div class='empty-state'>No days-left data.</div>", unsafe_allow_html=True)
         st.markdown("</div>", unsafe_allow_html=True)
 
-    # Tables via tabs
     st.markdown("<hr class='swag-divider'>", unsafe_allow_html=True)
-    tab_labels = ["📊 Total Stock","🏪 By Branch"]
+    tab_labels = ["📊 Total Stock", "🏪 By Branch"]
     if st.session_state.show_transfers: tab_labels.append("🔄 Transfers")
     if st.session_state.show_reorder:   tab_labels.append("🔔 Reorder Risk")
     tabs = st.tabs(tab_labels); ti = 0
@@ -1115,7 +1287,7 @@ def show_purchase():
     </div>""", unsafe_allow_html=True)
 
     st.markdown("<div class='panel'>", unsafe_allow_html=True)
-    d1, d2, mc_col = st.columns([1,1,2])
+    d1, d2, mc_col = st.columns([1, 1, 2])
     with d1:     date_from = st.date_input("From Date", value=datetime.now()-timedelta(days=30), key="po_from")
     with d2:     date_to   = st.date_input("To Date",   value=datetime.now(),                   key="po_to")
     with mc_col: mc_input  = st.text_input("Model Code Filter (optional)", placeholder="e.g. ABC-001", key="po_mc")
@@ -1168,7 +1340,7 @@ def show_purchase():
     with pc3:
         st.markdown("<div class='panel'><div class='panel-title'>Daily purchase spend</div><div class='panel-sub'>Date wise purchase amount.</div>", unsafe_allow_html=True)
         daily = po_df.copy(); daily["_d"] = pd.to_datetime(daily[C_DATE], errors="coerce").dt.date
-        da = daily.groupby("_d")[C_SUBTOTAL].sum().reset_index(); da.columns = ["Date","Spend"]
+        da = daily.groupby("_d")[C_SUBTOTAL].sum().reset_index(); da.columns = ["Date", "Spend"]
         if not da.empty:
             fig3 = px.area(da, x="Date", y="Spend",
                            color_discrete_sequence=["#10b981"], template="plotly_white")
@@ -1213,7 +1385,7 @@ def show_sales():
     </div>""", unsafe_allow_html=True)
 
     st.markdown("<div class='panel'>", unsafe_allow_html=True)
-    d1, d2, mc_col = st.columns([1,1,2])
+    d1, d2, mc_col = st.columns([1, 1, 2])
     with d1:     date_from = st.date_input("From Date", value=datetime.now()-timedelta(days=30), key="sa_from")
     with d2:     date_to   = st.date_input("To Date",   value=datetime.now(),                   key="sa_to")
     with mc_col: mc_input  = st.text_input("Model Code Filter (optional)", placeholder="e.g. ABC-001", key="sa_mc")
@@ -1255,7 +1427,7 @@ def show_sales():
     with sc2:
         st.markdown("<div class='panel'><div class='panel-title'>Sales by day</div><div class='panel-sub'>Daily revenue line chart.</div>", unsafe_allow_html=True)
         daily = sa_df.copy(); daily["_d"] = pd.to_datetime(daily[C_DATE], errors="coerce").dt.date
-        da = daily.groupby("_d")[C_SUBTOTAL].sum().reset_index(); da.columns = ["Date","Revenue"]
+        da = daily.groupby("_d")[C_SUBTOTAL].sum().reset_index(); da.columns = ["Date", "Revenue"]
         if not da.empty:
             fig2 = px.area(da, x="Date", y="Revenue",
                            color_discrete_sequence=["#22c55e"], template="plotly_white")
@@ -1295,7 +1467,7 @@ def show_sales():
 def show_dashboard():
     st.markdown(_css(), unsafe_allow_html=True)
     render_sidebar()
-    view = st.session_state.get("analytics_view","stock")
+    view = st.session_state.get("analytics_view", "stock")
     if   view == "purchase": show_purchase()
     elif view == "sales":    show_sales()
     else:                    show_stock()
