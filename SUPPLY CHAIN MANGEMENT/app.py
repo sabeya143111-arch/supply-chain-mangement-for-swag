@@ -52,6 +52,13 @@ C_SUBTOTAL      = "Subtotal"
 C_QTY_PURCHASED = "Qty Purchased"
 C_CURRENCY      = "Currency"
 
+# New columns added to align with Colab script (purchase & product metadata)
+C_BRAND         = "Brand"
+C_MODEL_CAT     = "Model Category"
+C_STOCK_ON_HAND = "Stock On Hand"      # product.qty_available
+C_FREE_QTY      = "Free Qty"           # product.free_qty
+C_FORECAST_QTY  = "Forecast Qty"       # product.virtual_available
+
 # ─────────────────────────────────────────────────────────────────────────────
 # SESSION STATE
 # ─────────────────────────────────────────────────────────────────────────────
@@ -152,7 +159,6 @@ def _to_num(series):
 
 # ─────────────────────────────────────────────────────────────────────────────
 # PAGINATION HELPER — fetch all records beyond a single search_read limit
-# Used to avoid missing records in high-volume environments.
 # ─────────────────────────────────────────────────────────────────────────────
 def _search_read_all(url, db, uid, ak, model, domain, fields, batch=2000):
     """
@@ -173,19 +179,36 @@ def _search_read_all(url, db, uid, ak, model, domain, fields, batch=2000):
         offset += batch
     return records
 
+# -----------------------------------------------------------------------------
+# Helper to safely get a field value that may be a many2one tuple or a scalar
+# -----------------------------------------------------------------------------
+def _safe_val(val):
+    if isinstance(val, (list, tuple)) and len(val) > 1:
+        return val[1]
+    return val
+
+# -----------------------------------------------------------------------------
+# Helper to extract brand from product (supports multiple possible field names)
+# -----------------------------------------------------------------------------
+def _get_brand(product):
+    for f in ["brand_id", "product_brand_id", "x_brand"]:
+        val = product.get(f)
+        if val:
+            return _safe_val(val)
+    return ""
+
+# -----------------------------------------------------------------------------
+# Helper to extract model category (supports multiple possible field names)
+# -----------------------------------------------------------------------------
+def _get_model_category(product):
+    for f in ["x_model_category", "x_studio_model_category"]:
+        val = product.get(f)
+        if val:
+            return _safe_val(val)
+    return ""
+
 # ─────────────────────────────────────────────────────────────────────────────
-# DATA FETCHING — STOCK
-# ─────────────────────────────────────────────────────────────────────────────
-# CHANGES (vs original):
-#   1. Use _search_read_all for quants to avoid silently missing stock records.
-#   2. Quant domain: product_id in var_ids AND location_id.usage = 'internal'
-#      — identical to Odoo's Inventory > Products on-hand filter.
-#      Odoo's standard valuation report excludes transit/virtual/supplier locations;
-#      'internal' usage covers all physical warehouse locations.
-#   3. Aggregate quant.quantity (not reserved_quantity) — matches Odoo "On Hand".
-#   4. CSOLD: uses sale.order.line with order_id.state in ('sale','done') and
-#      order_id.date_order in last 30 days — same as Odoo Sales Analysis default.
-#   5. product.template fetch also paginated for large catalogs.
+# DATA FETCHING — STOCK (aligned with Odoo inventory valuation)
 # ─────────────────────────────────────────────────────────────────────────────
 @st.cache_data(ttl=1800, show_spinner=False)
 def _fetch_stock_one(key, codes_tuple, exact, low_thresh, show_transfers, show_reorder,
@@ -197,7 +220,7 @@ def _fetch_stock_one(key, codes_tuple, exact, low_thresh, show_transfers, show_r
     try:
         prod_domain = _domain(codes, exact) if codes else []
 
-        # --- CHANGE: paginate templates to handle large catalogs ---
+        # Paginate templates
         templates = _search_read_all(url, db, uid, ak, "product.template",
                                      prod_domain if prod_domain else [],
                                      ["id", "name", "default_code", "list_price", "categ_id"])
@@ -207,7 +230,7 @@ def _fetch_stock_one(key, codes_tuple, exact, low_thresh, show_transfers, show_r
         tmpl_map  = {t["id"]: t for t in templates}
         tmpl_ids  = list(tmpl_map.keys())
 
-        # --- Fetch all variants for these templates ---
+        # Fetch all variants for these templates
         variants  = _search_read_all(url, db, uid, ak, "product.product",
                                      [("product_tmpl_id", "in", tmpl_ids)],
                                      ["id", "product_tmpl_id"])
@@ -219,10 +242,7 @@ def _fetch_stock_one(key, codes_tuple, exact, low_thresh, show_transfers, show_r
 
         tmpl_qty, branch_rows = {}, []
         if var_ids:
-            # CHANGE: paginate quants; domain mirrors Odoo Inventory report —
-            # product_id in variants, location internal usage only.
-            # 'quantity' field = total on-hand (includes reserved); Odoo report
-            # shows "On Hand" = sum(quantity) across internal locations.
+            # Quant domain: internal locations only -> matches Odoo "On Hand" report
             quants = _search_read_all(url, db, uid, ak, "stock.quant",
                                       [("product_id", "in", var_ids),
                                        ("location_id.usage", "=", "internal")],
@@ -232,8 +252,6 @@ def _fetch_stock_one(key, codes_tuple, exact, low_thresh, show_transfers, show_r
                 tid = var_to_tmpl.get(vid)
                 if tid is None:
                     continue
-                # Use q["quantity"] — this is the total on-hand including reserved,
-                # matching Odoo's "On Hand Quantity" column in inventory reports.
                 qty = float(q.get("quantity") or 0)
                 tmpl_qty[tid] = tmpl_qty.get(tid, 0) + qty
                 loc_raw  = q.get("location_id")
@@ -242,18 +260,14 @@ def _fetch_stock_one(key, codes_tuple, exact, low_thresh, show_transfers, show_r
                 if mc:
                     branch_rows.append({C_SYSTEM: name, C_BRANCH: loc_name, C_MODEL: mc, C_ON_HAND: qty})
 
-        # CHANGE: CSOLD uses order_id.date_order (same field as Odoo Sales Analysis)
-        # and state in ('sale','done') matching Odoo's confirmed/locked orders filter.
-        # product_uom_qty = ordered qty (matches Odoo Sales Analysis "Qty Ordered").
+        # Velocity: sales in last 30 days (state sale/done, date_order based)
         vel_map = {}
         if var_ids:
             try:
                 date_30 = (datetime.now() - timedelta(days=30)).strftime("%Y-%m-%d")
-                # Paginate so lines; large warehouses can easily exceed 20k lines in 30d.
                 so_lines = _search_read_all(url, db, uid, ak, "sale.order.line",
                                             [("product_id", "in", var_ids),
                                              ("order_id.date_order", ">=", f"{date_30} 00:00:00"),
-                                             # Align to Odoo Sales Analysis: confirmed/locked only
                                              ("order_id.state", "in", ["sale", "done"])],
                                             ["product_id", "product_uom_qty"])
                 for sl in so_lines:
@@ -262,7 +276,6 @@ def _fetch_stock_one(key, codes_tuple, exact, low_thresh, show_transfers, show_r
                     if tid:
                         vel_map[tid] = vel_map.get(tid, 0) + float(sl.get("product_uom_qty") or 0)
             except Exception as e:
-                # Surface the error in stats rather than silently swallowing it
                 return [], [], [], [], {"system": name, "level": "error",
                                         "msg": f"Velocity fetch error: {type(e).__name__}: {e}"}
 
@@ -316,7 +329,6 @@ def _fetch_stock_one(key, codes_tuple, exact, low_thresh, show_transfers, show_r
 
         if show_transfers and var_ids:
             try:
-                # Internal pending transfers — unchanged from original
                 moves = _search_read_all(url, db, uid, ak, "stock.move",
                                          [("product_id", "in", var_ids),
                                           ("state", "not in", ["cancel", "done"]),
@@ -340,9 +352,8 @@ def _fetch_stock_one(key, codes_tuple, exact, low_thresh, show_transfers, show_r
                         C_REFERENCE: mv.get("reference", ""),
                         C_SCHEDULED: str(mv.get("date", ""))[:10],
                     })
-            except Exception as e:
-                # Log transfer fetch errors in stats
-                pass  # Transfers are non-critical; continue without them
+            except Exception:
+                pass
 
         return total_rows, branch_rows, transfer_rows, reorder_rows, \
                {"system": name, "level": "ok", "msg": f"Loaded {len(total_rows)} products."}
@@ -383,45 +394,34 @@ def fetch_all_data(codes, exact, low_stock_thresh, show_transfers, show_reorder,
 
 
 # ─────────────────────────────────────────────────────────────────────────────
-# DATA FETCHING — PURCHASE
-# ─────────────────────────────────────────────────────────────────────────────
-# CHANGES (vs original):
-#   1. DATE FIELD: Changed from date_approve to date_order.
-#      Rationale: Odoo's standard "Purchase Analysis" report and "Purchase Orders"
-#      list both default to filtering/grouping by Order Date (date_order), NOT
-#      the approval date. date_approve is NULL for RFQs and can differ significantly
-#      from when the order was placed. Using date_order aligns dashboard exports
-#      with Odoo Purchase Analysis pivot totals for the same date range.
-#   2. STATES: Keep state in ('purchase','done') — these are "Purchase Order" and
-#      "Locked" in Odoo UI, exactly the non-RFQ confirmed states shown in the
-#      standard Purchase Orders report (excludes 'draft'=RFQ, 'sent'=RFQ Sent,
-#      'cancel'=Cancelled).
-#   3. PRODUCT FILTER: Strictly by product_id.default_code via line domain —
-#      products with blank/missing default_code are included when no filter given,
-#      and skipped when the user provides a code list (consistent with Odoo behavior).
-#   4. NUMERIC FIELDS: price_subtotal = untaxed subtotal (matches Odoo PO line
-#      "Subtotal" column). product_qty = ordered qty (not received qty).
-#   5. Paginated with _search_read_all to avoid missing POs in high-volume DBs.
-#   6. C_DATE now sourced from date_order (not date_approve).
+# DATA FETCHING — PURCHASE (ALIGNED WITH COLAB SCRIPT)
 # ─────────────────────────────────────────────────────────────────────────────
 @st.cache_data(ttl=1800, show_spinner=False)
 def fetch_purchase_history_for_system(system_key, model_codes, date_from, date_to):
+    """
+    Fetches purchase order lines with product metadata including brand, model category,
+    and stock quantities (qty_available, free_qty, virtual_available).
+    Aligned with Colab script:
+        - state = 'purchase' (confirmed POs only)
+        - date_order (Order Date) instead of date_approve
+        - product fields: default_code, name, categ_id, brand fields, model category fields,
+          qty_available, free_qty, virtual_available
+    """
     url, db, uid, ak, name, err = _get_conn(system_key)
     _empty = pd.DataFrame(columns=[C_SYSTEM, C_DATE, C_PO, C_VENDOR, C_CURRENCY,
                                     C_PRODUCT, C_MODEL, C_CATEGORY, C_QTY_PURCHASED,
-                                    C_UNIT_PRICE, C_SUBTOTAL, C_STATE])
+                                    C_UNIT_PRICE, C_SUBTOTAL, C_STATE,
+                                    C_BRAND, C_MODEL_CAT, C_STOCK_ON_HAND, C_FREE_QTY, C_FORECAST_QTY])
     if err:
         return _empty
     try:
-        # CHANGE: Filter by date_order (Order Date) not date_approve —
-        # aligns with Odoo Purchase Analysis report default date grouping.
-        # state in ('purchase','done') = "Purchase Order" + "Locked" in Odoo UI.
+        # CHANGED: state = 'purchase' only (matches Colab)
+        # CHANGED: use date_order (Order Date) to align with Odoo Purchase Analysis
         po_domain = [
             ("date_order", ">=", f"{date_from} 00:00:00"),
             ("date_order", "<=", f"{date_to} 23:59:59"),
-            ("state", "in", ["purchase", "done"]),
+            ("state", "=", "purchase"),
         ]
-        # CHANGE: Paginate PO fetch to handle environments with many orders
         pos_list = _search_read_all(url, db, uid, ak, "purchase.order",
                                     po_domain,
                                     ["id", "name", "partner_id", "date_order", "state", "currency_id"])
@@ -430,27 +430,30 @@ def fetch_purchase_history_for_system(system_key, model_codes, date_from, date_t
         po_ids  = [p["id"] for p in pos_list]
         po_map  = {p["id"]: p for p in pos_list}
 
-        # Build line domain; filter by product default_code when user provides codes.
-        # Products without default_code are excluded when a code filter is active
-        # (consistent with Odoo's "Internal Reference" filter behavior).
         line_domain = [("order_id", "in", po_ids)]
         if model_codes:
-            # CHANGE: filter on purchase.order.line directly via relational field —
-            # ('product_id.default_code','in',[...]) matches Odoo product filter.
-            # Skip lines where default_code is blank if a filter is given.
             line_domain.append(("product_id.default_code", "in", list(model_codes)))
 
         lines = _search_read_all(url, db, uid, ak, "purchase.order.line",
                                  line_domain,
                                  ["order_id", "product_id", "product_qty",
                                   "price_unit", "price_subtotal"])
+
         if not lines:
             return _empty
 
         prod_ids = list({l["product_id"][0] for l in lines if isinstance(l.get("product_id"), list)})
+
+        # CHANGED: fetch additional product fields required by Colab
+        product_fields = [
+            "id", "default_code", "name", "categ_id",
+            "brand_id", "product_brand_id", "x_brand",
+            "x_model_category", "x_studio_model_category",
+            "qty_available", "free_qty", "virtual_available"
+        ]
         products = _search_read_all(url, db, uid, ak, "product.product",
                                     [("id", "in", prod_ids)],
-                                    ["id", "default_code", "name", "categ_id"])
+                                    product_fields)
         prod_map = {p["id"]: p for p in products}
 
         rows = []
@@ -460,31 +463,39 @@ def fetch_purchase_history_for_system(system_key, model_codes, date_from, date_t
             pid  = (line["product_id"][0] if isinstance(line.get("product_id"), list) else line.get("product_id"))
             prod = prod_map.get(pid, {})
 
-            # CHANGE: skip lines where product has blank default_code AND user gave a filter
-            # (they would have been excluded by the domain already; guard for safety)
             mc = (prod.get("default_code") or "").strip()
-
             categ_raw    = prod.get("categ_id")
             partner_raw  = po.get("partner_id")
             currency_raw = po.get("currency_id")
 
+            # Extract brand and model category using helpers
+            brand = _get_brand(prod)
+            model_cat = _get_model_category(prod)
+
+            # Stock quantities (as of now, may be computed by Odoo)
+            qty_available = float(prod.get("qty_available") or 0)
+            free_qty      = float(prod.get("free_qty") or 0)
+            virtual_avail = float(prod.get("virtual_available") or 0)
+
             rows.append({
                 C_SYSTEM:   name,
-                # CHANGE: C_DATE from date_order (Order Date) — aligns with Odoo Purchase Analysis
-                C_DATE:     str(po.get("date_order", ""))[:10],
+                C_DATE:     str(po.get("date_order", ""))[:10],          # date_order
                 C_PO:       po.get("name", ""),
                 C_VENDOR:   partner_raw[1] if isinstance(partner_raw, list) and len(partner_raw) > 1 else "",
                 C_CURRENCY: currency_raw[1] if isinstance(currency_raw, list) and len(currency_raw) > 1 else "SAR",
                 C_PRODUCT:  prod.get("name", ""),
                 C_MODEL:    mc,
                 C_CATEGORY: categ_raw[1] if isinstance(categ_raw, list) and len(categ_raw) > 1 else "",
-                # product_qty = ordered quantity (Odoo PO line "Qty" column, not received qty)
                 C_QTY_PURCHASED: _to_num(pd.Series([line.get("product_qty", 0)]))[0],
-                # price_unit = unit price as stored on line (Odoo "Unit Price")
                 C_UNIT_PRICE:    _to_num(pd.Series([line.get("price_unit", 0)]))[0],
-                # price_subtotal = untaxed subtotal (Odoo PO line "Subtotal" = qty × unit_price)
                 C_SUBTOTAL:      _to_num(pd.Series([line.get("price_subtotal", 0)]))[0],
                 C_STATE:    po.get("state", ""),
+                # New columns
+                C_BRAND:         brand,
+                C_MODEL_CAT:     model_cat,
+                C_STOCK_ON_HAND: qty_available,
+                C_FREE_QTY:      free_qty,
+                C_FORECAST_QTY:  virtual_avail,
             })
 
         if not rows:
@@ -492,12 +503,13 @@ def fetch_purchase_history_for_system(system_key, model_codes, date_from, date_t
 
         df = pd.DataFrame(rows)
         df[C_DATE] = pd.to_datetime(df[C_DATE], errors="coerce")
-        for c in [C_QTY_PURCHASED, C_UNIT_PRICE, C_SUBTOTAL]:
-            df[c] = _to_num(df[c])
+        numeric_cols = [C_QTY_PURCHASED, C_UNIT_PRICE, C_SUBTOTAL, C_STOCK_ON_HAND, C_FREE_QTY, C_FORECAST_QTY]
+        for c in numeric_cols:
+            if c in df.columns:
+                df[c] = _to_num(df[c])
         return df.sort_values(C_DATE, ascending=False).reset_index(drop=True)
 
     except Exception as e:
-        # Surface errors rather than returning empty silently
         st.warning(f"[{system_key}] Purchase fetch error: {type(e).__name__}: {e}")
         return _empty
 
@@ -514,24 +526,7 @@ def fetch_all_purchase_history(model_codes, date_from, date_to):
 
 
 # ─────────────────────────────────────────────────────────────────────────────
-# DATA FETCHING — SALES
-# ─────────────────────────────────────────────────────────────────────────────
-# CHANGES (vs original):
-#   1. DATE FIELD: date_order already correct — matches Odoo Sales Analysis default.
-#   2. STATES: state in ('sale','done') — 'sale'=Sales Order (confirmed),
-#      'done'=Locked. This matches Odoo Sales Analysis default filter (excludes
-#      'draft'=Quotation, 'sent'=Quotation Sent, 'cancel'=Cancelled).
-#      No change needed here — original was already aligned.
-#   3. QUANTITY FIELD: product_uom_qty = "Quantity Ordered" in Odoo Sales Analysis.
-#      If you want "Quantity Delivered", use qty_delivered instead. Keeping
-#      product_uom_qty to match Odoo Sales Analysis "Qty Ordered" column.
-#   4. price_subtotal = tax-excluded subtotal (Odoo SO line "Subtotal" column).
-#      This matches Odoo Sales Analysis "Untaxed Total".
-#   5. PRODUCT FILTER: product_id.default_code filter applied directly on line domain,
-#      matching Odoo's "Internal Reference" product filter exactly.
-#   6. Paginated with _search_read_all — avoids missing orders/lines in high-volume DBs.
-#   7. Fetch orders only to get header fields; lines fetched separately via line_ids
-#      or direct domain (same pattern, now paginated).
+# DATA FETCHING — SALES (ALIGNED WITH ODOO SALES ANALYSIS)
 # ─────────────────────────────────────────────────────────────────────────────
 @st.cache_data(ttl=1800, show_spinner=False)
 def fetch_sales_history_for_system(system_key, model_codes, date_from, date_to):
@@ -541,14 +536,12 @@ def fetch_sales_history_for_system(system_key, model_codes, date_from, date_to):
     if err:
         return _empty
     try:
-        # date_order filter — already correct in original, confirmed against Odoo Sales Analysis.
-        # state in ('sale','done') = confirmed/locked, matching Odoo Sales Analysis default.
+        # Odoo Sales Analysis: state in ('sale','done') = confirmed + locked
         so_domain = [
             ("date_order", ">=", f"{date_from} 00:00:00"),
             ("date_order", "<=", f"{date_to} 23:59:59"),
             ("state", "in", ["sale", "done"]),
         ]
-        # CHANGE: paginate order fetch to handle high-volume databases
         orders = _search_read_all(url, db, uid, ak, "sale.order",
                                   so_domain,
                                   ["id", "name", "date_order", "partner_id", "state", "order_line"])
@@ -558,12 +551,8 @@ def fetch_sales_history_for_system(system_key, model_codes, date_from, date_to):
         order_map = {o["id"]: o for o in orders}
         order_ids = list(order_map.keys())
 
-        # CHANGE: fetch lines by order_id domain instead of collecting all line_ids
-        # first. This avoids the XML-RPC argument-length limit on very large id lists
-        # and ensures we don't miss lines if order_line field is truncated.
         line_domain = [("order_id", "in", order_ids)]
         if model_codes:
-            # CHANGE: direct default_code filter on line — mirrors Odoo "Internal Reference" filter
             line_domain.append(("product_id.default_code", "in", list(model_codes)))
 
         lines = _search_read_all(url, db, uid, ak, "sale.order.line",
@@ -590,17 +579,14 @@ def fetch_sales_history_for_system(system_key, model_codes, date_from, date_to):
 
             rows.append({
                 C_SYSTEM:   name,
-                # date_order = Order Date — matches Odoo Sales Analysis grouping field
                 C_DATE:     str(order.get("date_order", ""))[:10],
                 C_SO:       order.get("name", ""),
                 C_CUSTOMER: partner_raw[1] if isinstance(partner_raw, list) and len(partner_raw) > 1 else "",
                 C_PRODUCT:  prod.get("name", ""),
                 C_MODEL:    (prod.get("default_code") or "").strip(),
                 C_CATEGORY: categ_raw[1] if isinstance(categ_raw, list) and len(categ_raw) > 1 else "",
-                # product_uom_qty = "Qty Ordered" (Odoo Sales Analysis default measure)
                 C_QTY:        _to_num(pd.Series([line.get("product_uom_qty", 0)]))[0],
                 C_UNIT_PRICE: _to_num(pd.Series([line.get("price_unit", 0)]))[0],
-                # price_subtotal = untaxed amount (Odoo SO line "Subtotal" = qty × unit_price before tax)
                 C_SUBTOTAL:   _to_num(pd.Series([line.get("price_subtotal", 0)]))[0],
                 C_STATE:    order.get("state", ""),
             })
@@ -1065,7 +1051,6 @@ def render_sidebar():
         cls   = "ok" if level == "ok" else ("err" if level == "error" else "off")
         msg   = stat.get("msg", "") if stat else ""
         st.markdown(f"<span class='sys-badge sys-badge-{cls}'>{icon} {cfg.get('name','SWAG')}</span>", unsafe_allow_html=True)
-        # Surface any system-level errors to the sidebar for visibility
         if level == "error" and msg:
             st.markdown(f"<div style='font-size:.68rem;color:#b91c1c;margin-top:4px;'>{msg}</div>", unsafe_allow_html=True)
 
