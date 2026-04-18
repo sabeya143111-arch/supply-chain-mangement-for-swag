@@ -193,14 +193,14 @@ def _fetch_stock_one(key, codes_tuple, exact, low_thresh, show_transfers, show_r
         prod_domain = _domain(codes, exact) if codes else []
         templates = _x(url, db, uid, ak, "product.template", "search_read",
                         [prod_domain if prod_domain else []],
-                        {"fields": ["id","name","default_code","list_price","categ_id"], "limit": 5000})
+                        {"fields": ["id","name","default_code","list_price","categ_id"], "limit": 2000})
         if not templates:
             return [], [], [], [], {"system": name, "level": "ok", "msg": "No products found."}
         tmpl_map = {t["id"]: t for t in templates}
         tmpl_ids = list(tmpl_map.keys())
         variants = _x(url, db, uid, ak, "product.product", "search_read",
                        [[("product_tmpl_id", "in", tmpl_ids)]],
-                       {"fields": ["id","product_tmpl_id"], "limit": 50000})
+                       {"fields": ["id","product_tmpl_id"], "limit": 2000})
         var_to_tmpl = {}
         for v in variants:
             raw = v.get("product_tmpl_id")
@@ -212,7 +212,7 @@ def _fetch_stock_one(key, codes_tuple, exact, low_thresh, show_transfers, show_r
         if var_ids:
             quants = _x(url, db, uid, ak, "stock.quant", "search_read",
                          [[("product_id","in",var_ids),("location_id.usage","=","internal")]],
-                         {"fields": ["product_id","location_id","quantity"], "limit": 50000})
+                         {"fields": ["product_id","location_id","quantity"], "limit": 2000})
             for q in quants:
                 pid_raw = q.get("product_id")
                 vid = pid_raw[0] if isinstance(pid_raw, list) else pid_raw
@@ -234,7 +234,7 @@ def _fetch_stock_one(key, codes_tuple, exact, low_thresh, show_transfers, show_r
                                [[("product_id","in",var_ids),
                                  ("order_id.date_order",">=",f"{date_30_ago} 00:00:00"),
                                  ("order_id.state","in",["sale","done"])]],
-                               {"fields": ["product_id","product_uom_qty"], "limit": 50000})
+                               {"fields": ["product_id","product_uom_qty"], "limit": 20000})
                 for sl in so_lines:
                     pid_raw = sl.get("product_id")
                     vid = pid_raw[0] if isinstance(pid_raw, list) else pid_raw
