@@ -1,6 +1,7 @@
 """
 SWAG Product Sync — Standalone App (Light Theme)
 Copy products from SWAG to any target company (La Rouche, Fashion Limits, Different Clothes)
+Parallel creation + smart error handling
 """
 
 import io
@@ -9,6 +10,7 @@ import hashlib
 import time
 import xmlrpc.client
 from datetime import datetime
+from concurrent.futures import ThreadPoolExecutor, as_completed
 
 import pandas as pd
 import streamlit as st
@@ -101,6 +103,8 @@ hr{border:none!important;height:1px!important;background:linear-gradient(90deg,t
 footer{visibility:hidden;}
 [data-baseweb="tag"]{background:#e0e7ff!important;color:#4f46e5!important;}
 [data-baseweb="select"] div{background:#ffffff!important;color:#1e1b4b!important;border-color:#c7d2fe!important;}
+.error-card{background:#fef2f2;border-left:4px solid #dc2626;border-radius:10px;padding:12px 16px;margin:8px 0;font-size:0.85rem;color:#7f1d1d;font-family:monospace;}
+.error-card strong{color:#b91c1c;}
 </style>
 """, unsafe_allow_html=True)
 
@@ -328,6 +332,48 @@ def create_product_in_target(target_cfg, swag_product):
 
 
 # -----------------------------------------------------------------------------
+# Smart error parser
+# -----------------------------------------------------------------------------
+def parse_odoo_error(e):
+    """Extract human-readable error from Odoo XML-RPC exception."""
+    error_str = str(e)
+    # Try to decode fault string
+    if hasattr(e, 'faultString'):
+        error_str = e.faultString
+    elif isinstance(e, xmlrpc.client.Fault):
+        error_str = e.faultString
+    
+    # Common patterns
+    if "Access denied" in error_str or "AccessError" in error_str:
+        return "Access Denied — You don't have permission to create products."
+    if "ValidationError" in error_str:
+        # Extract field info
+        if "barcode" in error_str.lower():
+            return "Validation error on field 'barcode' — value must be unique."
+        if "default_code" in error_str.lower():
+            return "Validation error on field 'default_code' — possibly duplicate or invalid format."
+        if "name" in error_str.lower():
+            return "Validation error on field 'name' — missing or invalid."
+        # Generic validation
+        return f"Validation Error: {error_str[:200]}"
+    if "unique constraint" in error_str.lower():
+        return "Unique constraint violation — this product code already exists."
+    if "required field" in error_str.lower():
+        # Try to extract field name
+        match = re.search(r"required field[:\s]+([\w_]+)", error_str, re.I)
+        field = match.group(1) if match else "unknown"
+        return f"Missing required field: '{field}'."
+    if "Many2one" in error_str or "Invalid field" in error_str:
+        match = re.search(r"field[:\s]+([\w_]+)", error_str, re.I)
+        field = match.group(1) if match else "unknown"
+        return f"Incompatible or invalid field: '{field}'. Check that the related record exists."
+    if "xmlrpc.client.Fault" in error_str:
+        return f"XML-RPC Fault: {error_str[:300]}"
+    # Default
+    return error_str[:500]  # Truncate for readability
+
+
+# -----------------------------------------------------------------------------
 # Main UI
 # -----------------------------------------------------------------------------
 st.markdown("""
@@ -465,28 +511,84 @@ if st.button("🔍 Check Products", type="primary", use_container_width=False, k
 if "sync_missing_codes" in st.session_state and st.session_state["sync_missing_codes"]:
     missing_codes = st.session_state["sync_missing_codes"]
     st.markdown(f"<div class='info-banner'>📌 {len(missing_codes)} product(s) are missing in the target company.</div>", unsafe_allow_html=True)
-    if st.button("➕ Create Missing", type="primary", key="sync_create"):
-        progress_bar = st.progress(0, text="Creating products...")
-        created = 0
-        skipped = 0
-        errors = 0
+    
+    if st.button("➕ Create Missing (Parallel)", type="primary", key="sync_create"):
+        progress_bar = st.progress(0, text="Starting parallel creation...")
+        status_text = st.empty()
+        errors_container = st.container()
+        
+        # Prepare results tracking
+        results = []  # each item: {'code': str, 'status': 'created'/'skipped'/'error', 'reason': str, 'product_name': str}
         total = len(missing_codes)
-        for i, code in enumerate(missing_codes):
+        completed = 0
+        
+        def create_one(code):
             try:
+                # Fetch product from SWAG
                 swag_prod = fetch_product_from_swag(code)
                 if not swag_prod:
-                    st.warning(f"⚠️ Could not fetch product {code} from SWAG. Skipped.")
-                    skipped += 1
-                else:
-                    create_product_in_target(target_cfg, swag_prod)
-                    created += 1
+                    return {'code': code, 'status': 'skipped', 'reason': 'Product not found in SWAG', 'product_name': code}
+                # Create in target
+                create_product_in_target(target_cfg, swag_prod)
+                return {'code': code, 'status': 'created', 'reason': '', 'product_name': swag_prod.get('name', code)}
             except Exception as e:
-                st.error(f"❌ Failed to create {code}: {e}")
-                errors += 1
-            time.sleep(0.5)
-            progress_bar.progress((i + 1) / total, text=f"Creating products... ({i+1}/{total})")
+                error_msg = parse_odoo_error(e)
+                return {'code': code, 'status': 'error', 'reason': error_msg, 'product_name': code}
+        
+        # Parallel execution with ThreadPoolExecutor
+        with ThreadPoolExecutor(max_workers=5) as executor:
+            future_to_code = {executor.submit(create_one, code): code for code in missing_codes}
+            
+            for future in as_completed(future_to_code):
+                result = future.result()
+                results.append(result)
+                completed += 1
+                progress_bar.progress(completed / total, text=f"Creating products... ({completed}/{total})")
+                status_text.markdown(f"🔄 **Progress:** {completed}/{total} completed")
+                
+                # Show live error card if error occurred
+                if result['status'] == 'error':
+                    with errors_container:
+                        st.markdown(
+                            f"""<div class='error-card'>
+                            <strong>❌ {result['code']}</strong><br>
+                            <strong>Reason:</strong> {result['reason']}<br>
+                            </div>""",
+                            unsafe_allow_html=True
+                        )
+        
         progress_bar.empty()
-        st.success(f"✅ Done. Created: {created}, Skipped: {skipped}, Errors: {errors}")
-        # clear session state so the button disappears after creation
+        status_text.empty()
+        
+        # Compile final statistics
+        created = sum(1 for r in results if r['status'] == 'created')
+        skipped = sum(1 for r in results if r['status'] == 'skipped')
+        errors = sum(1 for r in results if r['status'] == 'error')
+        
+        # Summary card
+        st.markdown("---")
+        st.markdown("### 📊 Final Summary")
+        col1, col2, col3 = st.columns(3)
+        col1.metric("✅ Created", created)
+        col2.metric("⚠️ Skipped", skipped)
+        col3.metric("❌ Failed", errors)
+        
+        # If any failures, offer download button
+        if errors > 0:
+            failed_list = [{'Code': r['code'], 'Product Name': r['product_name'], 'Error Reason': r['reason']} 
+                           for r in results if r['status'] == 'error']
+            df_failed = pd.DataFrame(failed_list)
+            csv_failed = df_failed.to_csv(index=False).encode('utf-8-sig')
+            st.download_button(
+                label="⬇️ Download Failed List (CSV)",
+                data=csv_failed,
+                file_name=f"failed_products_{datetime.now().strftime('%Y%m%d_%H%M')}.csv",
+                mime="text/csv",
+                use_container_width=False
+            )
+        
+        st.success(f"✅ Completed. Created: {created}, Skipped: {skipped}, Errors: {errors}")
+        
+        # Clear session state so the button disappears after creation
         del st.session_state["sync_missing_codes"]
         st.rerun()
