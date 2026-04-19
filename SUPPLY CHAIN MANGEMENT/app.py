@@ -2,6 +2,7 @@
 SWAG Product Sync — Standalone App (Light Theme)
 Copy products from SWAG to any target company (La Rouche, Fashion Limits, Different Clothes)
 MAXIMUM SPEED: batch API calls + parallel creation + bulk fetch
++ FULL SCAN MODE: find all missing products in one click
 """
 
 import io
@@ -139,6 +140,8 @@ if "retry_counts" not in st.session_state:
     st.session_state.retry_counts = {}  # code -> attempts
 if "last_sync_time" not in st.session_state:
     st.session_state.last_sync_time = None
+if "full_scan_results" not in st.session_state:
+    st.session_state.full_scan_results = None  # store missing list for full scan
 
 
 # -----------------------------------------------------------------------------
@@ -466,6 +469,66 @@ def batch_check_products(codes, target_cfg):
 
 
 # -----------------------------------------------------------------------------
+# FULL SCAN function (two API calls total)
+# -----------------------------------------------------------------------------
+def full_scan(target_cfg):
+    """Fetch all products from SWAG and target, return missing products list."""
+    swag_cfg = st.secrets["SWAG"]
+    # Step 1: Authenticate
+    uid_swag = _auth(swag_cfg["url"], swag_cfg["db"], swag_cfg["user"], swag_cfg["api_key"])
+    uid_target = _auth(target_cfg["url"], target_cfg["db"], target_cfg["user"], target_cfg["api_key"])
+    if not uid_swag or not uid_target:
+        raise Exception("Authentication failed for SWAG or target company.")
+    
+    # Step 2: Fetch all SWAG products (with default_code)
+    swag_domain = [["default_code", "!=", False]]
+    swag_fields = ["default_code", "name", "categ_id", "brand_id"]
+    swag_all = call_with_retry(
+        _x, swag_cfg["url"], swag_cfg["db"], uid_swag, swag_cfg["api_key"],
+        "product.template", "search_read", [swag_domain],
+        {"fields": swag_fields, "limit": 5000, "order": "id asc"}
+    )
+    if not swag_all:
+        swag_all = []
+    swag_dict = {}
+    for p in swag_all:
+        code = p.get("default_code")
+        if code:
+            # extract names
+            categ_name = None
+            if p.get("categ_id") and isinstance(p["categ_id"], list) and len(p["categ_id"]) > 1:
+                categ_name = p["categ_id"][1]
+            brand_name = None
+            if p.get("brand_id") and isinstance(p["brand_id"], list) and len(p["brand_id"]) > 1:
+                brand_name = p["brand_id"][1]
+            swag_dict[code] = {
+                "code": code,
+                "name": p.get("name", code),
+                "category": categ_name or "—",
+                "brand": brand_name or "—"
+            }
+    
+    # Step 3: Fetch all target products (only default_code)
+    target_domain = [["default_code", "!=", False]]
+    target_all = call_with_retry(
+        _x, target_cfg["url"], target_cfg["db"], uid_target, target_cfg["api_key"],
+        "product.template", "search_read", [target_domain],
+        {"fields": ["default_code"], "limit": 5000}
+    )
+    if not target_all:
+        target_all = []
+    target_codes = {p.get("default_code") for p in target_all if p.get("default_code")}
+    
+    # Step 4: Find missing
+    missing = []
+    for code, data in swag_dict.items():
+        if code not in target_codes:
+            missing.append(data)
+    
+    return missing, len(swag_dict), len(target_codes)
+
+
+# -----------------------------------------------------------------------------
 # Main UI
 # -----------------------------------------------------------------------------
 
@@ -486,7 +549,184 @@ with st.sidebar:
 
 st.markdown("---")
 
-# Step 1: Company selector
+# =============================================================================
+# NEW: FULL SCAN MODE
+# =============================================================================
+st.markdown("### 🔍 FULL SCAN — Find all missing products")
+st.markdown("Scan all products in SWAG and compare with the target company (fast: only 2 API calls).")
+full_scan_company_map = {
+    "La Rouche": "LAROUCHE",
+    "Fashion Limits": "FASHION_LIMITS",
+    "Different Clothes": "DIFFC"
+}
+full_scan_selected_label = st.selectbox(
+    "Target Company for Full Scan",
+    list(full_scan_company_map.keys()),
+    key="full_scan_company"
+)
+full_scan_target_key = full_scan_company_map[full_scan_selected_label]
+full_scan_target_cfg = st.secrets.get(full_scan_target_key)
+
+if st.button("🔍 Scan Now", type="primary", key="full_scan_button", help="Fetch all products from SWAG and target company to find missing ones."):
+    if not full_scan_target_cfg:
+        st.error(f"❌ Secrets missing for {full_scan_selected_label}. Check your secrets.toml file.")
+    else:
+        with st.spinner(f"🔍 Scanning SWAG & {full_scan_selected_label}..."):
+            try:
+                missing_list, total_swag, total_target = full_scan(full_scan_target_cfg)
+                st.session_state.full_scan_results = {
+                    "missing": missing_list,
+                    "total_swag": total_swag,
+                    "total_target": total_target,
+                    "company": full_scan_selected_label,
+                    "target_cfg": full_scan_target_cfg
+                }
+            except Exception as e:
+                st.error(f"❌ Scan failed: {str(e)}")
+                st.session_state.full_scan_results = None
+
+# Display full scan results if available
+if st.session_state.get("full_scan_results"):
+    res = st.session_state.full_scan_results
+    missing = res["missing"]
+    total_swag = res["total_swag"]
+    total_target = res["total_target"]
+    company = res["company"]
+    
+    st.markdown("---")
+    col1, col2, col3 = st.columns(3)
+    col1.metric("📦 Total in SWAG", total_swag)
+    col2.metric(f"✅ Already in {company}", total_target)
+    col3.metric("❌ Missing", len(missing))
+    
+    if len(missing) == 0:
+        st.markdown(f'<div class="ok-banner">✅ All SWAG products already exist in {company}!</div>', unsafe_allow_html=True)
+    else:
+        st.markdown(f"#### 📋 Missing Products ({len(missing)} items)")
+        # Show up to 500 rows
+        show_missing = missing[:500]
+        df_missing = pd.DataFrame(show_missing)
+        if len(missing) > 500:
+            st.info(f"Showing first 500 of {len(missing)} missing products. Download CSV for full list.")
+        st.dataframe(df_missing, use_container_width=True, hide_index=True)
+        
+        # Download button
+        csv_full = pd.DataFrame(missing).to_csv(index=False).encode('utf-8-sig')
+        st.download_button(
+            "⬇️ Download Missing List CSV",
+            csv_full,
+            f"missing_products_{company}_{datetime.now().strftime('%Y%m%d_%H%M')}.csv",
+            "text/csv",
+            use_container_width=False
+        )
+        
+        # Create All Missing button
+        if st.button("➕ Create All Missing", type="primary", key="full_scan_create"):
+            # Prepare creation list
+            to_create = missing  # list of dicts with code, name, category, brand
+            total_to_create = len(to_create)
+            if total_to_create == 0:
+                st.info("No missing products to create.")
+            else:
+                progress_bar = st.progress(0, text="Starting parallel creation...")
+                status_text = st.empty()
+                errors_container = st.container()
+                results_created = []
+                
+                # Bulk fetch all product data from SWAG
+                missing_codes = [item["code"] for item in to_create]
+                swag_bulk_data = fetch_products_bulk_from_swag(missing_codes)
+                
+                completed = 0
+                
+                def create_one(product_info):
+                    code = product_info["code"]
+                    prod_data = swag_bulk_data.get(code)
+                    if not prod_data:
+                        return {"code": code, "name": product_info["name"], "status": "skipped", "reason": "Product not found in SWAG", "new_id": None}
+                    try:
+                        new_id = create_product_in_target(res["target_cfg"], prod_data)
+                        return {"code": code, "name": product_info["name"], "status": "created", "reason": "", "new_id": new_id}
+                    except Exception as e:
+                        error_msg = parse_odoo_error(e)
+                        return {"code": code, "name": product_info["name"], "status": "error", "reason": error_msg, "raw_error": str(e), "new_id": None}
+                
+                with ThreadPoolExecutor(max_workers=8) as executor:
+                    future_to_info = {executor.submit(create_one, info): info for info in to_create}
+                    for future in as_completed(future_to_info):
+                        result = future.result()
+                        results_created.append(result)
+                        completed += 1
+                        percent = int(completed / total_to_create * 100)
+                        progress_bar.progress(completed / total_to_create, text=f"⚡ Creating {completed} / {total_to_create} ({percent}%)")
+                        status_text.markdown(f"🔄 **{completed} / {total_to_create}** completed")
+                        
+                        if result["status"] == "error":
+                            with errors_container:
+                                st.markdown(
+                                    f"""<div class='error-card'>
+                                    <strong>❌ {result['code']}</strong><br>
+                                    <strong>📋 Name:</strong> {result['name']}<br>
+                                    <strong>⚠️ Reason:</strong> {result['reason']}<br>
+                                    <strong>🔍 Raw:</strong> {result.get('raw_error', '')[:200]}...
+                                    </div>""",
+                                    unsafe_allow_html=True
+                                )
+                
+                progress_bar.empty()
+                status_text.empty()
+                
+                created = sum(1 for r in results_created if r["status"] == "created")
+                skipped = sum(1 for r in results_created if r["status"] == "skipped")
+                errors = sum(1 for r in results_created if r["status"] == "error")
+                
+                if errors == 0:
+                    st.balloons()
+                    st.markdown('<div class="ok-banner">🎉 All products created successfully! 🎉</div>', unsafe_allow_html=True)
+                else:
+                    st.markdown(f'<div class="alert-banner">⚠️ Completed with {errors} errors. See details below.</div>', unsafe_allow_html=True)
+                
+                col1, col2, col3 = st.columns(3)
+                col1.metric("✅ Created", created)
+                col2.metric("⚠️ Skipped", skipped)
+                col3.metric("❌ Failed", errors)
+                
+                # Download buttons
+                success_list = [{"Code": r["code"], "Name": r["name"], "New ID": r["new_id"]} for r in results_created if r["status"] == "created"]
+                failed_list = [{"Code": r["code"], "Name": r["name"], "Error Reason": r["reason"]} for r in results_created if r["status"] == "error"]
+                
+                if success_list:
+                    df_success = pd.DataFrame(success_list)
+                    csv_success = df_success.to_csv(index=False).encode('utf-8-sig')
+                    st.download_button("⬇️ Download Success List (CSV)", csv_success, f"success_{datetime.now().strftime('%Y%m%d_%H%M')}.csv", "text/csv", use_container_width=False)
+                if failed_list:
+                    df_failed = pd.DataFrame(failed_list)
+                    csv_failed = df_failed.to_csv(index=False).encode('utf-8-sig')
+                    st.download_button("⬇️ Download Failed List (CSV)", csv_failed, f"failed_{datetime.now().strftime('%Y%m%d_%H%M')}.csv", "text/csv", use_container_width=False)
+                
+                # Save to history
+                st.session_state.sync_history.append({
+                    "timestamp": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+                    "company": company,
+                    "total": total_to_create,
+                    "created": created,
+                    "skipped": skipped,
+                    "errors": errors,
+                    "retried": 0
+                })
+                
+                # Clear results to avoid re-running
+                st.session_state.full_scan_results = None
+                st.rerun()
+
+st.markdown("---")
+st.markdown("### ✍️ Manual Sync (Targeted Products)")
+st.markdown("For specific product codes, use the manual method below.")
+
+# =============================================================================
+# EXISTING MANUAL SYNC CODE (unchanged)
+# =============================================================================
+# Step 1: Company selector (existing)
 st.markdown('<div class="section-header"><span class="step-circle">1</span><h3>Target Company</h3></div>', unsafe_allow_html=True)
 company_map = {
     "La Rouche": "LAROUCHE",
