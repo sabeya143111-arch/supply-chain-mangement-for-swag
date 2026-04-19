@@ -1,10 +1,11 @@
 """
 SWAG Product Sync — Standalone App (Light Theme)
 Copy products from SWAG to any target company (La Rouche, Fashion Limits, Different Clothes)
-Parallel creation + smart error handling + advanced UI/animations
+MAXIMUM SPEED: batch API calls + parallel creation + bulk fetch
 """
 
 import io
+import os
 import re
 import hashlib
 import time
@@ -112,11 +113,17 @@ footer{visibility:hidden;}
 
 
 # -----------------------------------------------------------------------------
-# Logo at the very top
+# Logo at the very top (gracefully handle missing file)
 # -----------------------------------------------------------------------------
 col1, col2, col3 = st.columns([1, 2, 1])
 with col2:
-    st.image("logo.png", width=220)
+    if os.path.exists("logo.png"):
+        st.image("logo.png", width=220)
+    else:
+        st.markdown(
+            "<div style='text-align: center; font-size: 1.5rem; font-weight: 600; color: #4f46e5;'>🔄 SWAG Product Sync</div>",
+            unsafe_allow_html=True
+        )
 st.markdown("<br>", unsafe_allow_html=True)
 
 # -----------------------------------------------------------------------------
@@ -153,7 +160,7 @@ def _x(url, db, uid, key, model, method, domain, kw):
     return _proxy(url, "object").execute_kw(db, uid, key, model, method, domain, kw)
 
 
-def call_with_retry(func, *args, retries=5, delay=4, **kwargs):
+def call_with_retry(func, *args, retries=3, delay=2, **kwargs):
     for attempt in range(retries):
         try:
             return func(*args, **kwargs)
@@ -210,7 +217,7 @@ def parse_invoice_pdf_cached(file_bytes):
 
 
 # -----------------------------------------------------------------------------
-# get_or_create helpers for category, brand, season
+# get_or_create helpers for category, brand, season (unchanged)
 # -----------------------------------------------------------------------------
 def get_or_create_category(target_cfg, category_name):
     if not category_name:
@@ -276,72 +283,81 @@ def get_or_create_season(target_cfg, season_name):
         return None
 
 
-def fetch_product_from_swag(default_code):
-    """Retrieve full product details from SWAG by default_code."""
+# -----------------------------------------------------------------------------
+# BULK fetch from SWAG (one API call)
+# -----------------------------------------------------------------------------
+def fetch_products_bulk_from_swag(codes_list):
+    """Fetch all needed product data from SWAG in a single call."""
+    if not codes_list:
+        return {}
     cfg = st.secrets["SWAG"]
     uid = _auth(cfg["url"], cfg["db"], cfg["user"], cfg["api_key"])
     if not uid:
-        return None
-    domain = [["default_code", "=", default_code]]
+        return {}
+    domain = [["default_code", "in", codes_list]]
+    # We fetch product.template because it contains the required fields (categ_id, brand_id, season_id)
     fields = [
         "name", "default_code", "categ_id", "brand_id", "season_id",
         "barcode", "type", "standard_price", "list_price", "compare_list_price"
     ]
-    products = call_with_retry(
-        _x, cfg["url"], cfg["db"], uid, cfg["api_key"],
-        "product.product", "search_read", [domain], {"fields": fields, "limit": 1}
-    )
-    if not products:
-        return None
-    prod = products[0]
-    # resolve names
-    categ_name = None
-    if prod.get("categ_id"):
-        if isinstance(prod["categ_id"], list):
-            categ_name = prod["categ_id"][1]
-        else:
-            categ_name = str(prod["categ_id"])
-    brand_name = None
-    if prod.get("brand_id"):
-        if isinstance(prod["brand_id"], list):
-            brand_name = prod["brand_id"][1]
-        else:
-            brand_name = str(prod["brand_id"])
-    season_name = None
-    if prod.get("season_id"):
-        if isinstance(prod["season_id"], list):
-            season_name = prod["season_id"][1]
-        else:
-            season_name = str(prod["season_id"])
-    return {
-        "name": prod.get("name", ""),
-        "default_code": prod.get("default_code", ""),
-        "categ_name": categ_name,
-        "brand_name": brand_name,
-        "season_name": season_name,
-        "barcode": prod.get("barcode", ""),
-        "type": prod.get("type", "product"),
-        "standard_price": float(prod.get("standard_price") or 0.0),
-        "list_price": float(prod.get("list_price") or 0.0),
-        "compare_list_price": float(prod.get("compare_list_price") or 0.0),
-    }
+    try:
+        recs = call_with_retry(
+            _x, cfg["url"], cfg["db"], uid, cfg["api_key"],
+            "product.template", "search_read", [domain],
+            {"fields": fields, "limit": len(codes_list) + 50}
+        )
+    except Exception:
+        # Fallback to product.product if product.template fails
+        recs = call_with_retry(
+            _x, cfg["url"], cfg["db"], uid, cfg["api_key"],
+            "product.product", "search_read", [domain],
+            {"fields": fields, "limit": len(codes_list) + 50}
+        )
+    result = {}
+    for r in recs or []:
+        code = r.get("default_code", "")
+        if not code:
+            continue
+        # extract names from many2one tuples
+        categ_name = None
+        if r.get("categ_id") and isinstance(r["categ_id"], list) and len(r["categ_id"]) > 1:
+            categ_name = r["categ_id"][1]
+        brand_name = None
+        if r.get("brand_id") and isinstance(r["brand_id"], list) and len(r["brand_id"]) > 1:
+            brand_name = r["brand_id"][1]
+        season_name = None
+        if r.get("season_id") and isinstance(r["season_id"], list) and len(r["season_id"]) > 1:
+            season_name = r["season_id"][1]
+        result[code] = {
+            "name": r.get("name", ""),
+            "default_code": code,
+            "categ_name": categ_name,
+            "brand_name": brand_name,
+            "season_name": season_name,
+            "barcode": r.get("barcode", ""),
+            "type": r.get("type", "consu"),
+            "standard_price": float(r.get("standard_price") or 0.0),
+            "list_price": float(r.get("list_price") or 0.0),
+            "compare_list_price": float(r.get("compare_list_price") or 0.0),
+        }
+    return result
 
 
-def create_product_in_target(target_cfg, swag_product):
-    """Create a product in target company using SWAG product data."""
+def create_product_in_target(target_cfg, product_data):
+    """Create a product in target company using pre‑fetched SWAG data."""
     uid = _auth(target_cfg["url"], target_cfg["db"], target_cfg["user"], target_cfg["api_key"])
     if not uid:
         raise Exception("Authentication failed for target company")
-    categ_id = get_or_create_category(target_cfg, swag_product["categ_name"]) if swag_product["categ_name"] else None
-    brand_id = get_or_create_brand(target_cfg, swag_product["brand_name"]) if swag_product["brand_name"] else None
-    season_id = get_or_create_season(target_cfg, swag_product["season_name"]) if swag_product["season_name"] else None
+    categ_id = get_or_create_category(target_cfg, product_data["categ_name"]) if product_data.get("categ_name") else None
+    brand_id = get_or_create_brand(target_cfg, product_data["brand_name"]) if product_data.get("brand_name") else None
+    season_id = get_or_create_season(target_cfg, product_data["season_name"]) if product_data.get("season_name") else None
     vals = {
-        "name": swag_product["name"],
-        "default_code": swag_product["default_code"],
-        "barcode": swag_product["barcode"],
-        "type": swag_product["type"],
-        "standard_price": swag_product["standard_price"],
-        "list_price": swag_product.get("compare_list_price") or swag_product.get("list_price") or 0.0,
+        "name": product_data["name"],
+        "default_code": product_data["default_code"],
+        "barcode": product_data.get("barcode", ""),
+        "type": product_data.get("type", "consu"),
+        "standard_price": product_data.get("standard_price", 0.0),
+        "list_price": product_data.get("compare_list_price") or product_data.get("list_price") or 0.0,
     }
     if categ_id:
         vals["categ_id"] = categ_id
@@ -393,43 +409,44 @@ def parse_odoo_error(e):
 
 
 # -----------------------------------------------------------------------------
-# Batch check (one API call per company)
+# Batch check (TWO API calls total)
 # -----------------------------------------------------------------------------
 def batch_check_products(codes, target_cfg):
-    """Check existence in target company and fetch SWAG product names in batch."""
-    # 1. Target company: search all at once
+    """Check existence in target company and fetch SWAG product names in TWO API calls."""
+    # 1. Target company: one search_read call to get existing codes
     uid_target = _auth(target_cfg["url"], target_cfg["db"], target_cfg["user"], target_cfg["api_key"])
     existing_map = {code: False for code in codes}
     if uid_target:
         domain = [["default_code", "in", codes]]
-        ids = call_with_retry(
+        existing_products = call_with_retry(
             _x, target_cfg["url"], target_cfg["db"], uid_target, target_cfg["api_key"],
-            "product.product", "search", [domain], {"limit": len(codes)}
+            "product.product", "search_read", [domain],
+            {"fields": ["default_code"], "limit": len(codes) + 50}
         )
-        if ids:
-            # fetch codes of found products
-            products = call_with_retry(
-                _x, target_cfg["url"], target_cfg["db"], uid_target, target_cfg["api_key"],
-                "product.product", "search_read", [domain], {"fields": ["default_code"], "limit": len(codes)}
-            )
-            for p in products:
-                existing_map[p["default_code"]] = True
+        if existing_products:
+            for p in existing_products:
+                code = p.get("default_code")
+                if code:
+                    existing_map[code] = True
     
-    # 2. SWAG: fetch names and existence
+    # 2. SWAG: one search_read call to get names and existence
     swag_cfg = st.secrets["SWAG"]
     uid_swag = _auth(swag_cfg["url"], swag_cfg["db"], swag_cfg["user"], swag_cfg["api_key"])
     swag_exists = {code: False for code in codes}
     product_names = {code: code for code in codes}
     if uid_swag:
         domain = [["default_code", "in", codes]]
-        products = call_with_retry(
+        swag_products = call_with_retry(
             _x, swag_cfg["url"], swag_cfg["db"], uid_swag, swag_cfg["api_key"],
-            "product.product", "search_read", [domain], {"fields": ["default_code", "name"], "limit": len(codes)}
+            "product.product", "search_read", [domain],
+            {"fields": ["default_code", "name"], "limit": len(codes) + 50}
         )
-        for p in products:
-            code = p["default_code"]
-            swag_exists[code] = True
-            product_names[code] = p.get("name", code)
+        if swag_products:
+            for p in swag_products:
+                code = p.get("default_code")
+                if code:
+                    swag_exists[code] = True
+                    product_names[code] = p.get("name", code)
     
     # Build results
     results = []
@@ -532,22 +549,25 @@ if st.button("🔍 Check Products", type="primary", use_container_width=False, k
     if not codes:
         st.warning("Please enter at least one product code.")
     else:
-        with st.spinner("Checking codes in batch..."):
+        with st.spinner("Checking codes in batch (2 API calls)..."):
             check_results = batch_check_products(codes, target_cfg)
             st.session_state.check_results = check_results
             
             # Prepare missing products data for preview
             missing_list = [r for r in check_results if r["status"] == "missing"]
             missing_products_data = []
-            for r in missing_list:
-                # fetch extra details from SWAG (categ, brand)
-                swag_prod = fetch_product_from_swag(r["code"])
-                missing_products_data.append({
-                    "code": r["code"],
-                    "name": r["name"],
-                    "category": swag_prod["categ_name"] if swag_prod else "—",
-                    "brand": swag_prod["brand_name"] if swag_prod else "—",
-                })
+            # Bulk fetch missing products from SWAG (one call) to get category/brand for preview
+            if missing_list:
+                missing_codes = [r["code"] for r in missing_list]
+                swag_bulk = fetch_products_bulk_from_swag(missing_codes)
+                for r in missing_list:
+                    prod = swag_bulk.get(r["code"], {})
+                    missing_products_data.append({
+                        "code": r["code"],
+                        "name": r["name"],
+                        "category": prod.get("categ_name", "—"),
+                        "brand": prod.get("brand_name", "—"),
+                    })
             st.session_state.missing_products_data = missing_products_data
 
 # Display check results if available
@@ -598,35 +618,34 @@ if st.session_state.check_results:
                 errors_container = st.container()
                 results_created = []  # store results for summary
                 
-                start_time = time.time()
+                # BULK fetch all product data from SWAG in ONE call
+                missing_codes_to_fetch = [item["code"] for item in to_create]
+                swag_bulk_data = fetch_products_bulk_from_swag(missing_codes_to_fetch)
+                
                 completed = 0
                 
                 def create_one(product_info):
                     code = product_info["code"]
+                    prod_data = swag_bulk_data.get(code)
+                    if not prod_data:
+                        return {"code": code, "name": product_info["name"], "status": "skipped", "reason": "Product not found in SWAG", "new_id": None}
                     try:
-                        swag_prod = fetch_product_from_swag(code)
-                        if not swag_prod:
-                            return {"code": code, "name": product_info["name"], "status": "skipped", "reason": "Product not found in SWAG", "new_id": None}
-                        new_id = create_product_in_target(target_cfg, swag_prod)
+                        new_id = create_product_in_target(target_cfg, prod_data)
                         return {"code": code, "name": product_info["name"], "status": "created", "reason": "", "new_id": new_id}
                     except Exception as e:
                         error_msg = parse_odoo_error(e)
                         return {"code": code, "name": product_info["name"], "status": "error", "reason": error_msg, "raw_error": str(e), "new_id": None}
                 
-                # Parallel execution
-                with ThreadPoolExecutor(max_workers=5) as executor:
+                # Parallel execution with ThreadPoolExecutor
+                with ThreadPoolExecutor(max_workers=8) as executor:
                     future_to_info = {executor.submit(create_one, info): info for info in to_create}
                     for future in as_completed(future_to_info):
                         result = future.result()
                         results_created.append(result)
                         completed += 1
-                        elapsed = time.time() - start_time
-                        eta = (elapsed / completed) * (total_to_create - completed) if completed > 0 else 0
-                        eta_str = f"{int(eta//60)}m {int(eta%60)}s" if eta < 3600 else f"{eta/60:.1f}m"
                         percent = int(completed / total_to_create * 100)
-                        progress_bar.progress(completed / total_to_create, text=f"⚡ Creating {completed} / {total_to_create} ({percent}%) — ETA: {eta_str}")
-                        current_product = result["code"]
-                        status_text.markdown(f"🔄 **Currently creating:** {current_product}")
+                        progress_bar.progress(completed / total_to_create, text=f"⚡ Creating {completed} / {total_to_create} ({percent}%)")
+                        status_text.markdown(f"🔄 **{completed} / {total_to_create}** completed")
                         
                         if result["status"] == "error":
                             with errors_container:
@@ -687,7 +706,7 @@ if st.session_state.check_results:
                             st.info("No products eligible for retry (max 2 attempts already reached).")
                         else:
                             st.session_state.missing_products_data = [{"code": r["code"], "name": r["name"], "category": "", "brand": ""} for r in to_retry]
-                            st.experimental_rerun()
+                            st.rerun()
                 
                 # Save to history
                 st.session_state.sync_history.append({
@@ -700,7 +719,7 @@ if st.session_state.check_results:
                     "retried": len([r for r in results_created if r["status"] == "error" and st.session_state.retry_counts.get(r["code"], 0) > 0])
                 })
                 
-                # Clear session state after completion (optional)
+                # Clear session state after completion
                 st.session_state.check_results = None
                 st.session_state.missing_products_data = None
                 st.rerun()
