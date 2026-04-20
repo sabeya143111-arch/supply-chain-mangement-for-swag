@@ -4,6 +4,7 @@ Copy products from SWAG to any target company (La Rouche, Fashion Limits, Differ
 MAXIMUM SPEED: batch API calls + parallel creation + bulk fetch
 + FULL SCAN MODE: find all missing products in one click
 + VARIANT SUPPORT: detect and create product.product variants with attributes
++ MULTIPLE RECORDS HANDLING: when same code exists as template + variant(s) in SWAG, user chooses which one to use.
 """
 
 import io
@@ -235,6 +236,8 @@ for key, default in [
     ("retry_counts", {}),
     ("last_sync_time", None),
     ("full_scan_results", None),
+    # === MULTIPLE SWAG RECORDS HANDLING: store chosen record id per code
+    ("chosen_swag_record_by_code", {}),
 ]:
     if key not in st.session_state:
         st.session_state[key] = default
@@ -290,8 +293,8 @@ _EXCLUDE = frozenset([
 ])
 
 
-def _valid(code):
-    c = code.strip().upper()
+def _valid(c):
+    c = c.strip().upper()
     return (bool(re.search(r'[A-Z]', c)) and bool(re.search(r'\d', c))
             and 4 <= len(c) <= 25 and c not in _EXCLUDE)
 
@@ -488,17 +491,19 @@ def _find_variant_by_pav_ids(target_cfg, uid, tmpl_id, target_pav_ids):
 
 
 # =============================================================================
-# BULK fetch from SWAG — extended with variant / attribute info
+# === MULTIPLE SWAG RECORDS HANDLING: robust bulk fetch with batching & fallback
 # =============================================================================
 def fetch_products_bulk_from_swag(codes_list):
     """
-    Fetch all needed product data from SWAG in minimal API calls.
+    Fetch ALL product records (product.product AND product.template) from SWAG
+    that match the given default_codes.
 
-    Extended fields (vs. original):
-      • product_tmpl_id  → template_name in result dict
-      • attribute_value_ids → resolved to ["Size: M", "Color: Black"] list
+    Returns a dict: { code: [record1, record2, ...] }
+    Each record contains all needed fields for display and creation.
 
-    Returns dict keyed by default_code.
+    Implements:
+      - Batching (max 50 codes per call) to avoid server limits.
+      - Fallback to product.template only if product.product call fails.
     """
     if not codes_list:
         return {}
@@ -507,45 +512,64 @@ def fetch_products_bulk_from_swag(codes_list):
     if not uid:
         return {}
 
-    domain = [["default_code", "in", codes_list]]
+    # Split codes into batches of 50
+    batch_size = 50
+    code_batches = [codes_list[i:i+batch_size] for i in range(0, len(codes_list), batch_size)]
+
+    all_pp_recs = []
+    all_tmpl_recs = []
+
+    # 1. Try product.product (variants + simple products)
     pp_fields = [
-        "name", "default_code", "categ_id", "brand_id", "season_id",
-        "barcode", "type", "standard_price", "list_price", "compare_list_price",
+        "id", "name", "default_code", "type", "barcode",
+        "standard_price", "list_price", "compare_list_price",
+        "categ_id", "brand_id", "season_id",
         "product_tmpl_id", "attribute_value_ids",
     ]
-
-    # Prefer product.product for variant-level granularity
-    recs = None
-    try:
-        recs = call_with_retry(
-            _x, cfg["url"], cfg["db"], uid, cfg["api_key"],
-            "product.product", "search_read", [domain],
-            {"fields": pp_fields, "limit": len(codes_list) + 50}
-        )
-    except Exception:
-        pass
-
-    # Fallback: product.template (no variant fields)
-    if not recs:
-        tmpl_fields = [f for f in pp_fields if f not in ("product_tmpl_id", "attribute_value_ids")]
+    pp_success = True
+    for batch in code_batches:
         try:
-            recs = call_with_retry(
+            pp_domain = [["default_code", "in", batch]]
+            batch_recs = call_with_retry(
                 _x, cfg["url"], cfg["db"], uid, cfg["api_key"],
-                "product.template", "search_read", [domain],
-                {"fields": tmpl_fields, "limit": len(codes_list) + 50}
+                "product.product", "search_read", [pp_domain],
+                {"fields": pp_fields, "limit": len(batch) * 2 + 50}
             )
-        except Exception:
-            recs = []
+            if batch_recs:
+                all_pp_recs.extend(batch_recs)
+        except Exception as e:
+            # If any batch fails, fall back to templates only
+            pp_success = False
+            break
 
-    recs = recs or []
+    # 2. If product.product failed, fallback to product.template only
+    if not pp_success:
+        tmpl_fields = [
+            "id", "name", "default_code", "type", "barcode",
+            "standard_price", "list_price", "compare_list_price",
+            "categ_id", "brand_id", "season_id",
+            "has_variants", "product_variant_count",
+        ]
+        for batch in code_batches:
+            try:
+                tmpl_domain = [["default_code", "in", batch]]
+                batch_recs = call_with_retry(
+                    _x, cfg["url"], cfg["db"], uid, cfg["api_key"],
+                    "product.template", "search_read", [tmpl_domain],
+                    {"fields": tmpl_fields, "limit": len(batch) * 2 + 50}
+                )
+                if batch_recs:
+                    all_tmpl_recs.extend(batch_recs)
+            except Exception:
+                # Last resort: empty list for this batch
+                continue
 
-    # Collect all attribute_value_ids for a single batch resolution call
+    # 3. Resolve attribute labels (only if we have product.product records)
     all_av_ids = set()
-    for r in recs:
+    for r in all_pp_recs:
         for avid in (r.get("attribute_value_ids") or []):
             all_av_ids.add(avid)
 
-    # One call to resolve all attribute values → "AttributeName: ValueName"
     av_label_map: dict[int, str] = {}
     if all_av_ids:
         try:
@@ -566,12 +590,13 @@ def fetch_products_bulk_from_swag(codes_list):
             pass
 
     def _m2o(record, field):
-        """Extract name from a Many2one tuple, or None."""
         val = record.get(field)
         return val[1] if isinstance(val, (list, tuple)) and len(val) > 1 else None
 
-    result = {}
-    for r in recs:
+    result: dict[str, list[dict]] = {}
+
+    # Process product.product records (if any)
+    for r in all_pp_recs:
         code = r.get("default_code", "")
         if not code:
             continue
@@ -580,25 +605,67 @@ def fetch_products_bulk_from_swag(codes_list):
             for avid in (r.get("attribute_value_ids") or [])
             if avid in av_label_map
         ]
-        result[code] = {
-            "name":              r.get("name", ""),
-            "default_code":      code,
-            "template_name":     _m2o(r, "product_tmpl_id") or r.get("name", ""),
-            "categ_name":        _m2o(r, "categ_id"),
-            "brand_name":        _m2o(r, "brand_id"),
-            "season_name":       _m2o(r, "season_id"),
-            "barcode":           r.get("barcode", ""),
-            "type":              r.get("type", "consu"),
-            "standard_price":    float(r.get("standard_price") or 0.0),
-            "list_price":        float(r.get("list_price") or 0.0),
+        # For a product.product, we mark it as having variants (since it's a variant itself)
+        has_variants = True
+        variant_count = 1
+
+        record = {
+            "id": r["id"],
+            "name": r.get("name", ""),
+            "default_code": code,
+            "type": r.get("type", "consu"),
+            "has_variants": has_variants,
+            "variant_count": variant_count,
+            "attributes": attributes,
+            "categ_name": _m2o(r, "categ_id"),
+            "brand_name": _m2o(r, "brand_id"),
+            "season_name": _m2o(r, "season_id"),
+            "barcode": r.get("barcode", ""),
+            "standard_price": float(r.get("standard_price") or 0.0),
+            "list_price": float(r.get("list_price") or 0.0),
             "compare_list_price": float(r.get("compare_list_price") or 0.0),
-            "attributes":        attributes,   # e.g. ["Size: M", "Color: Black"]
+            "template_name": _m2o(r, "product_tmpl_id") or r.get("name", ""),
+            "is_template": False,
+            "source_model": "product.product",
         }
+        result.setdefault(code, []).append(record)
+
+    # Process product.template records (fallback or supplementary)
+    for r in all_tmpl_recs:
+        code = r.get("default_code", "")
+        if not code:
+            continue
+        has_variants = r.get("has_variants", False)
+        variant_count = r.get("product_variant_count", 0)
+        record = {
+            "id": r["id"],
+            "name": r.get("name", ""),
+            "default_code": code,
+            "type": r.get("type", "consu"),
+            "has_variants": has_variants,
+            "variant_count": variant_count,
+            "attributes": [],   # templates don't have direct attributes at product level
+            "categ_name": _m2o(r, "categ_id"),
+            "brand_name": _m2o(r, "brand_id"),
+            "season_name": _m2o(r, "season_id"),
+            "barcode": r.get("barcode", ""),
+            "standard_price": float(r.get("standard_price") or 0.0),
+            "list_price": float(r.get("list_price") or 0.0),
+            "compare_list_price": float(r.get("compare_list_price") or 0.0),
+            "template_name": r.get("name", ""),
+            "is_template": True,
+            "source_model": "product.template",
+        }
+        result.setdefault(code, []).append(record)
+
+    # Sort records per code: templates first, then products, then by id
+    for code, recs in result.items():
+        recs.sort(key=lambda x: (0 if x["is_template"] else 1, x["id"]))
     return result
 
 
 # =============================================================================
-# create_product_in_target — variant-aware
+# create_product_in_target — variant-aware (unchanged)
 # =============================================================================
 def create_product_in_target(target_cfg, product_data):
     """
@@ -836,7 +903,7 @@ def parse_odoo_error(e):
 
 
 # -----------------------------------------------------------------------------
-# Batch check (2 API calls total)
+# Batch check (2 API calls total) — uses new fetch function
 # -----------------------------------------------------------------------------
 def batch_check_products(codes, target_cfg):
     """Check existence in target company and fetch SWAG product names in two API calls."""
@@ -854,37 +921,30 @@ def batch_check_products(codes, target_cfg):
             if code:
                 existing_map[code] = True
 
-    swag_cfg = st.secrets["SWAG"]
-    uid_swag  = _auth(swag_cfg["url"], swag_cfg["db"], swag_cfg["user"], swag_cfg["api_key"])
-    swag_exists   = {code: False for code in codes}
-    product_names = {code: code for code in codes}
-    if uid_swag:
-        domain = [["default_code", "in", codes]]
-        swag_products = call_with_retry(
-            _x, swag_cfg["url"], swag_cfg["db"], uid_swag, swag_cfg["api_key"],
-            "product.product", "search_read", [domain],
-            {"fields": ["default_code", "name"], "limit": len(codes) + 50}
-        )
-        for p in (swag_products or []):
-            code = p.get("default_code")
-            if code:
-                swag_exists[code]   = True
-                product_names[code] = p.get("name", code)
+    # Get SWAG records (multi) and extract first name for display
+    swag_records_by_code = fetch_products_bulk_from_swag(codes)
+    swag_exists = {code: len(recs) > 0 for code, recs in swag_records_by_code.items()}
+    product_names = {}
+    for code, recs in swag_records_by_code.items():
+        if recs:
+            product_names[code] = recs[0].get("name", code)
+        else:
+            product_names[code] = code
 
     results = []
     for code in codes:
-        if not swag_exists[code]:
+        if not swag_exists.get(code, False):
             status = "not_in_swag"
-        elif existing_map[code]:
+        elif existing_map.get(code, False):
             status = "exists"
         else:
             status = "missing"
-        results.append({"code": code, "name": product_names[code], "status": status})
+        results.append({"code": code, "name": product_names.get(code, code), "status": status})
     return results
 
 
 # -----------------------------------------------------------------------------
-# Full Scan (fetch all products from SWAG + target, return diff)
+# Full Scan (fetch all products from SWAG + target, return diff) - unchanged
 # -----------------------------------------------------------------------------
 def full_scan(target_cfg):
     """
@@ -1099,129 +1159,243 @@ if st.session_state.get("full_scan_results"):
 
     if len(missing) > 0:
         st.markdown(f"#### 📋 Missing Products ({len(missing)} items)")
-        show_missing = missing[:500]
-        df_missing = pd.DataFrame(show_missing)
-        if len(missing) > 500:
-            st.info(f"Showing first 500 of {len(missing)}. Download CSV for full list.")
-        st.dataframe(df_missing, use_container_width=True, hide_index=True)
+        # === MULTIPLE SWAG RECORDS HANDLING for full scan ===
+        missing_codes = [item["code"] for item in missing]
+        swag_multi_records = fetch_products_bulk_from_swag(missing_codes)
 
-        csv_full = pd.DataFrame(missing).to_csv(index=False).encode("utf-8-sig")
-        st.download_button(
-            "⬇️ Download Missing List CSV", csv_full,
-            f"missing_{company}_{datetime.now().strftime('%Y%m%d_%H%M')}.csv",
-            "text/csv", use_container_width=False,
-        )
-
-        if st.button("➕ Create All Missing", type="primary", key="full_scan_create"):
-            to_create        = missing
-            total_to_create  = len(to_create)
-
-            progress_bar  = st.progress(0, text="Starting parallel creation…")
-            batch_status  = st.empty()   # dynamic text above bar
-            errors_cont   = st.container()
-            results_created = []
-
-            missing_codes    = [item["code"] for item in to_create]
-            swag_bulk_data   = fetch_products_bulk_from_swag(missing_codes)
-
-            completed = 0
-
-            def _create_one_full(product_info):
-                code      = product_info["code"]
-                prod_data = swag_bulk_data.get(code)
-                if not prod_data:
-                    return {"code": code, "name": product_info["name"],
-                            "status": "skipped", "reason": "Not found in SWAG",
-                            "variant": "", "new_id": None}
-                try:
-                    new_id = create_product_in_target(res["target_cfg"], prod_data)
-                    return {"code": code, "name": product_info["name"],
-                            "status": "created", "reason": "",
-                            "variant": ", ".join(prod_data.get("attributes", [])),
-                            "new_id": new_id}
-                except Exception as exc:
-                    return {"code": code, "name": product_info["name"],
-                            "status": "error", "reason": parse_odoo_error(exc),
-                            "variant": ", ".join(prod_data.get("attributes", []) if prod_data else []),
-                            "raw_error": str(exc), "new_id": None}
-
-            with ThreadPoolExecutor(max_workers=8) as executor:
-                futures = {executor.submit(_create_one_full, info): info for info in to_create}
-                for future in as_completed(futures):
-                    result = future.result()
-                    results_created.append(result)
-                    completed += 1
-                    pct = int(completed / total_to_create * 100)
-                    progress_bar.progress(
-                        completed / total_to_create,
-                        text=f"⚡ Creating {completed} / {total_to_create} ({pct}%)…"
-                    )
-                    batch_status.markdown(
-                        f"🔄 **{completed} / {total_to_create}** completed &nbsp;"
-                        f"<small style='color:#888'>{pct}%</small>",
-                        unsafe_allow_html=True,
-                    )
-                    if result["status"] == "error":
-                        with errors_cont:
-                            st.markdown(
-                                f"<div class='error-card'>"
-                                f"<strong>❌ {result['code']}</strong> — {result['name']}<br>"
-                                f"<strong>Variant:</strong> {result['variant'] or '—'}<br>"
-                                f"<strong>⚠️ Reason:</strong> {result['reason']}<br>"
-                                f"<strong>🔍 Raw:</strong> {result.get('raw_error','')[:200]}"
-                                f"</div>",
-                                unsafe_allow_html=True,
-                            )
-
-            progress_bar.empty()
-            batch_status.empty()
-
-            created = sum(1 for r in results_created if r["status"] == "created")
-            skipped = sum(1 for r in results_created if r["status"] == "skipped")
-            errors  = sum(1 for r in results_created if r["status"] == "error")
-
-            _anim_creation_result_banner(errors)
-
-            c1, c2, c3 = st.columns(3)
-            c1.metric("✅ Created", created)
-            c2.metric("⚠️ Skipped", skipped)
-            c3.metric("❌ Failed",  errors)
-
-            success_list = [
-                {"Code": r["code"], "Name": r["name"], "Variant": r["variant"], "New ID": r["new_id"]}
-                for r in results_created if r["status"] == "created"
-            ]
-            failed_list = [
-                {"Code": r["code"], "Name": r["name"], "Variant": r["variant"], "Error Reason": r["reason"]}
-                for r in results_created if r["status"] == "error"
-            ]
-            if success_list:
-                st.download_button(
-                    "⬇️ Download Success List (CSV)",
-                    pd.DataFrame(success_list).to_csv(index=False).encode("utf-8-sig"),
-                    f"success_{datetime.now().strftime('%Y%m%d_%H%M')}.csv", "text/csv",
-                )
-            if failed_list:
-                st.download_button(
-                    "⬇️ Download Failed List (CSV)",
-                    pd.DataFrame(failed_list).to_csv(index=False).encode("utf-8-sig"),
-                    f"failed_{datetime.now().strftime('%Y%m%d_%H%M')}.csv", "text/csv",
-                )
-
-            st.session_state.sync_history.append({
-                "timestamp": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
-                "company":   company,
-                "total":     total_to_create,
-                "created":   created,
-                "skipped":   skipped,
-                "errors":    errors,
-                "retried":   0,
+        # Prepare a list of selection items (one per code)
+        missing_selection = []
+        for item in missing:
+            code = item["code"]
+            recs = swag_multi_records.get(code, [])
+            if not recs:
+                # fallback: create a dummy record from the scan data
+                recs = [{
+                    "id": None,
+                    "name": item["name"],
+                    "default_code": code,
+                    "type": "consu",
+                    "has_variants": False,
+                    "variant_count": 0,
+                    "attributes": [],
+                    "categ_name": item.get("category") if item.get("category") != "—" else None,
+                    "brand_name": item.get("brand") if item.get("brand") != "—" else None,
+                    "season_name": None,
+                    "barcode": "",
+                    "standard_price": 0.0,
+                    "list_price": 0.0,
+                    "compare_list_price": 0.0,
+                    "template_name": item["name"],
+                    "is_template": True,
+                    "source_model": "fallback",
+                }]
+            missing_selection.append({
+                "code": code,
+                "original_name": item["name"],
+                "options": recs,
             })
-            st.session_state.full_scan_results = None
-            st.rerun()
+
+        # Display interactive selection table
+        st.markdown("##### Select which SWAG record to use for each product code")
+        st.markdown("*If a code has multiple records, use the dropdown to choose.*")
+
+        chosen_by_code = st.session_state.chosen_swag_record_by_code
+
+        # Build rows with columns: code, selected name, variant info, dropdown (if multiple)
+        for idx, sel in enumerate(missing_selection):
+            code = sel["code"]
+            options = sel["options"]
+            is_multiple = len(options) > 1
+
+            # Determine currently chosen record id (or default to first)
+            default_idx = 0
+            current_chosen_id = chosen_by_code.get(code)
+            if current_chosen_id is not None:
+                for i, opt in enumerate(options):
+                    if opt["id"] == current_chosen_id:
+                        default_idx = i
+                        break
+            else:
+                chosen_by_code[code] = options[0]["id"]
+                current_chosen_id = options[0]["id"]
+
+            selected_rec = next((o for o in options if o["id"] == current_chosen_id), options[0])
+            variant_info = ""
+            if selected_rec["has_variants"]:
+                if selected_rec["is_template"]:
+                    variant_info = f"📦 Template with {selected_rec['variant_count']} variants"
+                else:
+                    variant_info = f"🔹 Variant (of {selected_rec['template_name']})"
+            else:
+                variant_info = "Simple product"
+
+            cols = st.columns([0.5, 1.5, 2, 2])
+            with cols[0]:
+                select_key = f"fullscan_select_{code}"
+                is_selected = st.checkbox("Create", key=select_key, value=True)
+            with cols[1]:
+                st.markdown(f"**{code}**")
+            with cols[2]:
+                if is_multiple:
+                    option_labels = []
+                    for opt in options:
+                        label = f"{opt['name']}"
+                        if opt["is_template"]:
+                            label += f" (template, {opt['variant_count']} variants)"
+                        else:
+                            label += f" (variant)"
+                        if opt.get("attributes"):
+                            label += f" – {', '.join(opt['attributes'])}"
+                        option_labels.append(label)
+                    selected_index = st.selectbox(
+                        "Choose record",
+                        options=range(len(options)),
+                        format_func=lambda i: option_labels[i],
+                        index=default_idx,
+                        key=f"fullscan_dropdown_{code}",
+                        label_visibility="collapsed"
+                    )
+                    if selected_index != default_idx:
+                        chosen_by_code[code] = options[selected_index]["id"]
+                        st.rerun()
+                    selected_rec = options[selected_index]
+                    variant_info = ""
+                    if selected_rec["has_variants"]:
+                        if selected_rec["is_template"]:
+                            variant_info = f"📦 Template with {selected_rec['variant_count']} variants"
+                        else:
+                            variant_info = f"🔹 Variant (of {selected_rec['template_name']})"
+                    else:
+                        variant_info = "Simple product"
+                else:
+                    st.markdown(f"**{selected_rec['name']}**")
+            with cols[3]:
+                st.markdown(variant_info)
+
+        if st.button("➕ Create All Selected", type="primary", key="full_scan_create"):
+            to_create = []
+            for sel in missing_selection:
+                code = sel["code"]
+                if not st.session_state.get(f"fullscan_select_{code}", False):
+                    continue
+                chosen_id = chosen_by_code.get(code)
+                if not chosen_id:
+                    continue
+                chosen_rec = next((o for o in sel["options"] if o["id"] == chosen_id), None)
+                if chosen_rec:
+                    to_create.append(chosen_rec)
+                else:
+                    st.warning(f"No valid SWAG record for code {code}, skipping.")
+            if not to_create:
+                st.warning("No products selected for creation.")
+            else:
+                total_to_create = len(to_create)
+                progress_bar = st.progress(0, text="Starting parallel creation…")
+                batch_status = st.empty()
+                errors_cont = st.container()
+                results_created = []
+
+                def _create_one_full(prod_data):
+                    code = prod_data["default_code"]
+                    try:
+                        new_id = create_product_in_target(res["target_cfg"], prod_data)
+                        return {
+                            "code": code,
+                            "name": prod_data["name"],
+                            "status": "created",
+                            "reason": "",
+                            "variant": ", ".join(prod_data.get("attributes", [])),
+                            "new_id": new_id,
+                        }
+                    except Exception as exc:
+                        return {
+                            "code": code,
+                            "name": prod_data["name"],
+                            "status": "error",
+                            "reason": parse_odoo_error(exc),
+                            "variant": ", ".join(prod_data.get("attributes", [])),
+                            "raw_error": str(exc),
+                            "new_id": None,
+                        }
+
+                with ThreadPoolExecutor(max_workers=8) as executor:
+                    futures = {executor.submit(_create_one_full, data): data for data in to_create}
+                    completed = 0
+                    for future in as_completed(futures):
+                        result = future.result()
+                        results_created.append(result)
+                        completed += 1
+                        pct = int(completed / total_to_create * 100)
+                        progress_bar.progress(
+                            completed / total_to_create,
+                            text=f"⚡ Creating {completed} / {total_to_create} ({pct}%)…"
+                        )
+                        batch_status.markdown(
+                            f"🔄 **{completed} / {total_to_create}** completed &nbsp;"
+                            f"<small style='color:#888'>{pct}%</small>",
+                            unsafe_allow_html=True,
+                        )
+                        if result["status"] == "error":
+                            with errors_cont:
+                                st.markdown(
+                                    f"<div class='error-card'>"
+                                    f"<strong>❌ {result['code']}</strong> — {result['name']}<br>"
+                                    f"<strong>Variant:</strong> {result['variant'] or '—'}<br>"
+                                    f"<strong>⚠️ Reason:</strong> {result['reason']}<br>"
+                                    f"<strong>🔍 Raw:</strong> {result.get('raw_error','')[:200]}"
+                                    f"</div>",
+                                    unsafe_allow_html=True,
+                                )
+
+                progress_bar.empty()
+                batch_status.empty()
+
+                created = sum(1 for r in results_created if r["status"] == "created")
+                skipped = sum(1 for r in results_created if r["status"] == "skipped")
+                errors = sum(1 for r in results_created if r["status"] == "error")
+
+                _anim_creation_result_banner(errors)
+
+                c1, c2, c3 = st.columns(3)
+                c1.metric("✅ Created", created)
+                c2.metric("⚠️ Skipped", skipped)
+                c3.metric("❌ Failed", errors)
+
+                success_list = [
+                    {"Code": r["code"], "Name": r["name"], "Variant": r["variant"], "New ID": r["new_id"]}
+                    for r in results_created if r["status"] == "created"
+                ]
+                failed_list = [
+                    {"Code": r["code"], "Name": r["name"], "Variant": r["variant"], "Error Reason": r["reason"]}
+                    for r in results_created if r["status"] == "error"
+                ]
+                if success_list:
+                    st.download_button(
+                        "⬇️ Download Success List (CSV)",
+                        pd.DataFrame(success_list).to_csv(index=False).encode("utf-8-sig"),
+                        f"success_{datetime.now().strftime('%Y%m%d_%H%M')}.csv", "text/csv",
+                    )
+                if failed_list:
+                    st.download_button(
+                        "⬇️ Download Failed List (CSV)",
+                        pd.DataFrame(failed_list).to_csv(index=False).encode("utf-8-sig"),
+                        f"failed_{datetime.now().strftime('%Y%m%d_%H%M')}.csv", "text/csv",
+                    )
+
+                st.session_state.sync_history.append({
+                    "timestamp": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+                    "company": company,
+                    "total": total_to_create,
+                    "created": created,
+                    "skipped": skipped,
+                    "errors": errors,
+                    "retried": 0,
+                })
+                st.session_state.full_scan_results = None
+                st.rerun()
 
 st.markdown("---")
-st.markdown("### ✍️ Manual Sync (Targeted Products)")
+st.markdown("###  Manual Sync (Targeted Products)")
 st.markdown("For specific product codes, use the manual method below.")
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -1237,7 +1411,7 @@ company_map = {
     "Different Clothes": "DIFFC",
 }
 selected_company_label = st.selectbox(
-    "🎯 Target Company", list(company_map.keys()), key="sync_company",
+    " Target Company", list(company_map.keys()), key="sync_company",
 )
 target_key = company_map[selected_company_label]
 target_cfg = st.secrets.get(target_key)
@@ -1285,23 +1459,46 @@ if st.button("🔍 Check Products", type="primary", key="sync_check"):
             st.session_state.check_results = check_results
 
             missing_list = [r for r in check_results if r["status"] == "missing"]
-            missing_products_data = []
             if missing_list:
                 missing_codes = [r["code"] for r in missing_list]
-                swag_bulk = fetch_products_bulk_from_swag(missing_codes)
+                swag_multi_records = fetch_products_bulk_from_swag(missing_codes)
+                missing_selection = []
                 for r in missing_list:
-                    prod = swag_bulk.get(r["code"], {})
-                    attrs = prod.get("attributes", [])
-                    missing_products_data.append({
-                        "code":     r["code"],
-                        "name":     r["name"],
-                        "category": prod.get("categ_name") or "—",
-                        "brand":    prod.get("brand_name") or "—",
-                        "variant":  ", ".join(attrs) if attrs else "—",
+                    code = r["code"]
+                    recs = swag_multi_records.get(code, [])
+                    if not recs:
+                        recs = [{
+                            "id": None,
+                            "name": r["name"],
+                            "default_code": code,
+                            "type": "consu",
+                            "has_variants": False,
+                            "variant_count": 0,
+                            "attributes": [],
+                            "categ_name": None,
+                            "brand_name": None,
+                            "season_name": None,
+                            "barcode": "",
+                            "standard_price": 0.0,
+                            "list_price": 0.0,
+                            "compare_list_price": 0.0,
+                            "template_name": r["name"],
+                            "is_template": True,
+                            "source_model": "fallback",
+                        }]
+                    missing_selection.append({
+                        "code": code,
+                        "original_name": r["name"],
+                        "options": recs,
                     })
-            st.session_state.missing_products_data = missing_products_data
+                st.session_state.missing_products_data = missing_selection
+                for sel in missing_selection:
+                    code = sel["code"]
+                    if code not in st.session_state.chosen_swag_record_by_code:
+                        st.session_state.chosen_swag_record_by_code[code] = sel["options"][0]["id"]
+            else:
+                st.session_state.missing_products_data = []
 
-        # Animated completion banner
         _anim_check_complete_banner()
 
 
@@ -1323,57 +1520,131 @@ if st.session_state.check_results:
 
     if missing_ct > 0 and st.session_state.missing_products_data:
         st.markdown("### 📋 Products to Create")
-        df_missing = pd.DataFrame(st.session_state.missing_products_data)
-        df_missing.insert(0, "Select", True)
+        st.markdown("##### Select which SWAG record to use for each product code")
+        st.markdown("*If a code has multiple records, use the dropdown to choose.*")
 
-        edited_df = st.data_editor(
-            df_missing,
-            column_config={
-                "Select":   st.column_config.CheckboxColumn("Create?", default=True),
-                "variant":  st.column_config.TextColumn("Variant", width="medium"),
-            },
-            disabled=["code", "name", "category", "brand", "variant"],
-            hide_index=True,
-            use_container_width=True,
-        )
-        selected_codes = edited_df[edited_df["Select"]]["code"].tolist()
+        missing_selection = st.session_state.missing_products_data
+        chosen_by_code = st.session_state.chosen_swag_record_by_code
+
+        selection_checks = {}
+        for idx, sel in enumerate(missing_selection):
+            code = sel["code"]
+            options = sel["options"]
+            is_multiple = len(options) > 1
+
+            current_chosen_id = chosen_by_code.get(code)
+            if current_chosen_id is None:
+                current_chosen_id = options[0]["id"]
+                chosen_by_code[code] = current_chosen_id
+
+            default_idx = 0
+            for i, opt in enumerate(options):
+                if opt["id"] == current_chosen_id:
+                    default_idx = i
+                    break
+
+            selected_rec = next((o for o in options if o["id"] == current_chosen_id), options[0])
+            variant_info = ""
+            if selected_rec["has_variants"]:
+                if selected_rec["is_template"]:
+                    variant_info = f"📦 Template with {selected_rec['variant_count']} variants"
+                else:
+                    variant_info = f"🔹 Variant (of {selected_rec['template_name']})"
+            else:
+                variant_info = "Simple product"
+
+            cols = st.columns([0.5, 1.5, 2, 2])
+            with cols[0]:
+                select_key = f"manual_select_{code}"
+                selection_checks[code] = st.checkbox("Create", key=select_key, value=True)
+            with cols[1]:
+                st.markdown(f"**{code}**")
+            with cols[2]:
+                if is_multiple:
+                    option_labels = []
+                    for opt in options:
+                        label = f"{opt['name']}"
+                        if opt["is_template"]:
+                            label += f" (template, {opt['variant_count']} variants)"
+                        else:
+                            label += f" (variant)"
+                        if opt.get("attributes"):
+                            label += f" – {', '.join(opt['attributes'])}"
+                        option_labels.append(label)
+                    selected_index = st.selectbox(
+                        "Choose record",
+                        options=range(len(options)),
+                        format_func=lambda i: option_labels[i],
+                        index=default_idx,
+                        key=f"manual_dropdown_{code}",
+                        label_visibility="collapsed"
+                    )
+                    if selected_index != default_idx:
+                        chosen_by_code[code] = options[selected_index]["id"]
+                        st.rerun()
+                    selected_rec = options[selected_index]
+                    variant_info = ""
+                    if selected_rec["has_variants"]:
+                        if selected_rec["is_template"]:
+                            variant_info = f"📦 Template with {selected_rec['variant_count']} variants"
+                        else:
+                            variant_info = f"🔹 Variant (of {selected_rec['template_name']})"
+                    else:
+                        variant_info = "Simple product"
+                else:
+                    st.markdown(f"**{selected_rec['name']}**")
+            with cols[3]:
+                st.markdown(variant_info)
 
         if st.button("➕ Create Selected Products", type="primary", key="create_selected"):
-            if not selected_codes:
+            to_create = []
+            for sel in missing_selection:
+                code = sel["code"]
+                if not selection_checks.get(code, False):
+                    continue
+                chosen_id = chosen_by_code.get(code)
+                if not chosen_id:
+                    continue
+                chosen_rec = next((o for o in sel["options"] if o["id"] == chosen_id), None)
+                if chosen_rec:
+                    to_create.append(chosen_rec)
+                else:
+                    st.warning(f"No valid SWAG record for code {code}, skipping.")
+            if not to_create:
                 st.warning("No products selected for creation.")
             else:
-                to_create       = [r for r in st.session_state.missing_products_data if r["code"] in selected_codes]
                 total_to_create = len(to_create)
-
-                progress_bar    = st.progress(0, text="Starting parallel creation…")
-                batch_status    = st.empty()
-                errors_cont     = st.container()
+                progress_bar = st.progress(0, text="Starting parallel creation…")
+                batch_status = st.empty()
+                errors_cont = st.container()
                 results_created = []
 
-                swag_bulk_data  = fetch_products_bulk_from_swag([item["code"] for item in to_create])
-                completed       = 0
-
-                def _create_one_manual(product_info):
-                    code      = product_info["code"]
-                    prod_data = swag_bulk_data.get(code)
-                    if not prod_data:
-                        return {"code": code, "name": product_info["name"],
-                                "status": "skipped", "reason": "Not found in SWAG",
-                                "variant": product_info.get("variant", ""), "new_id": None}
+                def _create_one_manual(prod_data):
+                    code = prod_data["default_code"]
                     try:
                         new_id = create_product_in_target(target_cfg, prod_data)
-                        return {"code": code, "name": product_info["name"],
-                                "status": "created", "reason": "",
-                                "variant": ", ".join(prod_data.get("attributes", [])),
-                                "new_id": new_id}
+                        return {
+                            "code": code,
+                            "name": prod_data["name"],
+                            "status": "created",
+                            "reason": "",
+                            "variant": ", ".join(prod_data.get("attributes", [])),
+                            "new_id": new_id,
+                        }
                     except Exception as exc:
-                        return {"code": code, "name": product_info["name"],
-                                "status": "error", "reason": parse_odoo_error(exc),
-                                "variant": ", ".join(prod_data.get("attributes", []) if prod_data else []),
-                                "raw_error": str(exc), "new_id": None}
+                        return {
+                            "code": code,
+                            "name": prod_data["name"],
+                            "status": "error",
+                            "reason": parse_odoo_error(exc),
+                            "variant": ", ".join(prod_data.get("attributes", [])),
+                            "raw_error": str(exc),
+                            "new_id": None,
+                        }
 
                 with ThreadPoolExecutor(max_workers=8) as executor:
-                    futures = {executor.submit(_create_one_manual, info): info for info in to_create}
+                    futures = {executor.submit(_create_one_manual, data): data for data in to_create}
+                    completed = 0
                     for future in as_completed(futures):
                         result = future.result()
                         results_created.append(result)
@@ -1405,14 +1676,14 @@ if st.session_state.check_results:
 
                 created = sum(1 for r in results_created if r["status"] == "created")
                 skipped = sum(1 for r in results_created if r["status"] == "skipped")
-                errors  = sum(1 for r in results_created if r["status"] == "error")
+                errors = sum(1 for r in results_created if r["status"] == "error")
 
                 _anim_creation_result_banner(errors)
 
                 c1, c2, c3 = st.columns(3)
                 c1.metric("✅ Created", created)
                 c2.metric("⚠️ Skipped", skipped)
-                c3.metric("❌ Failed",  errors)
+                c3.metric("❌ Failed", errors)
 
                 success_list = [
                     {"Code": r["code"], "Name": r["name"], "Variant": r["variant"], "New ID": r["new_id"]}
@@ -1435,7 +1706,6 @@ if st.session_state.check_results:
                         f"failed_{datetime.now().strftime('%Y%m%d_%H%M')}.csv", "text/csv",
                     )
 
-                # Retry failed
                 if errors > 0:
                     if st.button("🔄 Retry Failed", type="secondary", key="retry_failed"):
                         for r in results_created:
@@ -1451,25 +1721,28 @@ if st.session_state.check_results:
                         if not to_retry:
                             st.info("No products eligible for retry (max 2 attempts reached).")
                         else:
-                            st.session_state.missing_products_data = [
-                                {"code": r["code"], "name": r["name"],
-                                 "category": "", "brand": "", "variant": r.get("variant", "")}
-                                for r in to_retry
-                            ]
+                            retry_codes = [r["code"] for r in to_retry]
+                            swag_multi = fetch_products_bulk_from_swag(retry_codes)
+                            new_missing_selection = []
+                            for code in retry_codes:
+                                recs = swag_multi.get(code, [])
+                                if recs:
+                                    new_missing_selection.append({
+                                        "code": code,
+                                        "original_name": to_retry[0]["name"],
+                                        "options": recs,
+                                    })
+                            st.session_state.missing_products_data = new_missing_selection
                             st.rerun()
 
                 st.session_state.sync_history.append({
                     "timestamp": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
-                    "company":   selected_company_label,
-                    "total":     total_to_create,
-                    "created":   created,
-                    "skipped":   skipped,
-                    "errors":    errors,
-                    "retried":   len([
-                        r for r in results_created
-                        if r["status"] == "error"
-                        and st.session_state.retry_counts.get(r["code"], 0) > 0
-                    ]),
+                    "company": selected_company_label,
+                    "total": total_to_create,
+                    "created": created,
+                    "skipped": skipped,
+                    "errors": errors,
+                    "retried": len([r for r in results_created if r["status"] == "error" and st.session_state.retry_counts.get(r["code"], 0) > 0]),
                 })
 
                 st.session_state.check_results = None
