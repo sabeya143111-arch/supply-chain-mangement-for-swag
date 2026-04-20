@@ -1237,7 +1237,7 @@ company_map = {
     "Different Clothes": "DIFFC",
 }
 selected_company_label = st.selectbox(
-    "🎯 Target Company", list(company_map.keys()), key="sync_company",
+    " Target Company", list(company_map.keys()), key="sync_company",
 )
 target_key = company_map[selected_company_label]
 target_cfg = st.secrets.get(target_key)
