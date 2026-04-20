@@ -1221,7 +1221,7 @@ if st.session_state.get("full_scan_results"):
             st.rerun()
 
 st.markdown("---")
-st.markdown("### ✍️ Manual Sync (Targeted Products)")
+st.markdown("###  Manual Sync (Targeted Products)")
 st.markdown("For specific product codes, use the manual method below.")
 
 # ─────────────────────────────────────────────────────────────────────────────
