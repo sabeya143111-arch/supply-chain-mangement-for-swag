@@ -290,6 +290,8 @@ class SOtoPOSync:
         uid = cfg.auth()
         if not uid:
             raise Exception("Target auth failed")
+
+        # sirf search, create skip — no error
         ids = od_call_with_retry(
             od_x, cfg.url, cfg.db, uid, cfg.apikey,
             "product.category", "search",
@@ -298,17 +300,9 @@ class SOtoPOSync:
         )
         if ids:
             return ids[0]
-        try:
-            # Correct args pattern for execute_kw
-            return od_x(
-                cfg.url, cfg.db, uid, cfg.apikey,
-                "product.category", "create",
-                args=[[{"name": name}]],
-                kwargs={},
-            )
-        except Exception as e:
-            self.log(f"Category create skipped for '{name}': {e}")
-            return None
+
+        self.log(f"Category not found in target, skipping create for '{name}'")
+        return None
 
     def _get_or_create_brand(self, name):
         cfg = self.target
