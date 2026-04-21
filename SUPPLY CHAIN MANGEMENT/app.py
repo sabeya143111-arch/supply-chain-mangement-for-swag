@@ -181,8 +181,8 @@ class OdooCfg:
         self.apikey = data.get("apikey", "") or data.get("api_key", "")
         self.partner_code_field = data.get("partner_code_field", "company_code")
         self.company_id = data.get("company_id", None)
-        self.has_brand_model = bool(data.get("has_brand_model", True))
-        self.has_season_model = bool(data.get("has_season_model", True))
+        self.has_brand_model = bool(data.get("has_brand_model", False))  # default false
+        self.has_season_model = bool(data.get("has_season_model", False))
 
     def auth(self):
         return od_auth(self.url, self.db, self.user, self.apikey)
@@ -249,39 +249,49 @@ class SOtoPOSync:
         self.log(f"Customer '{partner.get('name')}' company code: {code}")
         return code
 
-    def _get_product_data(self, prod_id):
+    def _get_products_data_batch(self, product_ids):
+        """SWAG se products batch me fetch karo, ek hi read se."""
+        if not product_ids:
+            return {}
+
         cfg = self.source
         uid = cfg.auth()
         if not uid:
             raise Exception("Source auth failed")
 
-        prod = od_call_with_retry(
+        recs = od_call_with_retry(
             od_x, cfg.url, cfg.db, uid, cfg.apikey,
             "product.product", "read",
-            args=[[prod_id]],
+            args=[list(product_ids)],
             kwargs={"fields": [
                 "name", "default_code", "barcode", "type",
                 "standard_price", "lst_price",
                 "categ_id", "brand_id", "season_id",
             ]},
-        )[0]
+        )
 
         def m2o(val):
             if isinstance(val, list) and len(val) == 2:
                 return val[1]
             return None
 
-        return {
-            "name": prod.get("name") or prod.get("default_code") or "",
-            "default_code": prod.get("default_code"),
-            "barcode": prod.get("barcode") or "",
-            "type": prod.get("type") or "consu",
-            "standard_price": float(prod.get("standard_price") or 0.0),
-            "list_price": float(prod.get("lst_price") or 0.0),
-            "categ_name": m2o(prod.get("categ_id")),
-            "brand_name": m2o(prod.get("brand_id")),
-            "season_name": m2o(prod.get("season_id")),
-        }
+        out = {}
+        for prod in recs:
+            pid = prod.get("id")
+            if not pid:
+                continue
+            out[pid] = {
+                "name": prod.get("name") or prod.get("default_code") or "",
+                "default_code": prod.get("default_code"),
+                "barcode": prod.get("barcode") or "",
+                "type": prod.get("type") or "consu",
+                "standard_price": float(prod.get("standard_price") or 0.0),
+                "list_price": float(prod.get("lst_price") or 0.0),
+                "categ_name": m2o(prod.get("categ_id")),
+                "brand_name": None,     # brand disabled for now
+                "season_name": None,    # season disabled by default
+            }
+        return out
 
     def _get_or_create_category(self, name):
         if not name:
@@ -291,7 +301,6 @@ class SOtoPOSync:
         if not uid:
             raise Exception("Target auth failed")
 
-        # sirf search, create skip — no error
         ids = od_call_with_retry(
             od_x, cfg.url, cfg.db, uid, cfg.apikey,
             "product.category", "search",
@@ -305,56 +314,12 @@ class SOtoPOSync:
         return None
 
     def _get_or_create_brand(self, name):
-        cfg = self.target
-        if not cfg.has_brand_model or not name:
-            return None
-        uid = cfg.auth()
-        if not uid:
-            raise Exception("Target auth failed")
-        ids = od_call_with_retry(
-            od_x, cfg.url, cfg.db, uid, cfg.apikey,
-            "product.brand", "search",
-            args=[[("name", "=", name)]],
-            kwargs={"limit": 1},
-        )
-        if ids:
-            return ids[0]
-        try:
-            return od_x(
-                cfg.url, cfg.db, uid, cfg.apikey,
-                "product.brand", "create",
-                args=[[{"name": name}]],
-                kwargs={},
-            )
-        except Exception as e:
-            self.log(f"Brand create skipped for '{name}': {e}")
-            return None
+        # brand completely disabled to avoid product.brand errors
+        return None
 
     def _get_or_create_season(self, name):
-        cfg = self.target
-        if not cfg.has_season_model or not name:
-            return None
-        uid = cfg.auth()
-        if not uid:
-            raise Exception("Target auth failed")
-        ids = od_call_with_retry(
-            od_x, cfg.url, cfg.db, uid, cfg.apikey,
-            "product.season", "search",
-            args=[[("name", "=", name)]],
-            kwargs={"limit": 1},
-        )
-        if ids:
-            return ids[0]
-        try:
-            return od_x(
-                cfg.url, cfg.db, uid, cfg.apikey,
-                "product.season", "create",
-                args=[[{"name": name}]],
-                kwargs={},
-            )
-        except Exception as e:
-            self.log(f"Season create skipped for '{name}': {e}")
-            return None
+        # season also disabled by default; enable later if needed
+        return None
 
     def _ensure_product(self, prod_data):
         cfg = self.target
@@ -377,9 +342,7 @@ class SOtoPOSync:
             return ids[0]
 
         categ_id = self._get_or_create_category(prod_data.get("categ_name"))
-        brand_id = self._get_or_create_brand(prod_data.get("brand_name"))
-        season_id = self._get_or_create_season(prod_data.get("season_name"))
-
+        # brand/season disabled for now
         vals = {
             "name": prod_data.get("name") or default_code,
             "default_code": default_code,
@@ -390,10 +353,6 @@ class SOtoPOSync:
         }
         if categ_id:
             vals["categ_id"] = categ_id
-        if brand_id:
-            vals["brand_id"] = brand_id
-        if season_id:
-            vals["season_id"] = season_id
         if cfg.company_id:
             vals["company_id"] = cfg.company_id
 
@@ -493,17 +452,32 @@ class SOtoPOSync:
         )
         self.log(f"PO header created: {po_id}")
 
+        # batch product fetch
+        product_ids = []
+        for line in lines:
+            pid = line["product_id"][0] if line.get("product_id") else None
+            if pid:
+                product_ids.append(pid)
+        product_ids = list(set(product_ids))
+
+        products_map = self._get_products_data_batch(product_ids)
+
         line_cmds = []
         for idx, line in enumerate(lines, start=1):
             pid = line["product_id"][0] if line.get("product_id") else None
             if not pid:
                 self.log(f"Line {idx}: no product, skip")
                 continue
-            pdata = self._get_product_data(pid)
-            target_pid = self._ensure_product(pdata)
+
+            prod_data = products_map.get(pid)
+            if not prod_data:
+                self.log(f"Line {idx}: product {pid} not in batch data, skip")
+                continue
+
+            target_pid = self._ensure_product(prod_data)
             line_cmds.append((0, 0, {
                 "product_id": target_pid,
-                "name": line.get("name") or pdata.get("name") or "",
+                "name": line.get("name") or prod_data.get("name") or "",
                 "product_qty": line.get("product_uom_qty") or 0.0,
                 "price_unit": line.get("price_unit") or 0.0,
                 "date_planned": so.get("date_order") or datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
