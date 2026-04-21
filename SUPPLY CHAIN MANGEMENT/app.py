@@ -299,8 +299,13 @@ class SOtoPOSync:
         if ids:
             return ids[0]
         try:
-            return od_x(cfg.url, cfg.db, uid, cfg.apikey,
-                        "product.category", "create", [[{"name": name}]])
+            # Correct args pattern for execute_kw
+            return od_x(
+                cfg.url, cfg.db, uid, cfg.apikey,
+                "product.category", "create",
+                args=[[{"name": name}]],
+                kwargs={},
+            )
         except Exception as e:
             self.log(f"Category create skipped for '{name}': {e}")
             return None
@@ -321,8 +326,12 @@ class SOtoPOSync:
         if ids:
             return ids[0]
         try:
-            return od_x(cfg.url, cfg.db, uid, cfg.apikey,
-                        "product.brand", "create", [[{"name": name}]])
+            return od_x(
+                cfg.url, cfg.db, uid, cfg.apikey,
+                "product.brand", "create",
+                args=[[{"name": name}]],
+                kwargs={},
+            )
         except Exception as e:
             self.log(f"Brand create skipped for '{name}': {e}")
             return None
@@ -343,8 +352,12 @@ class SOtoPOSync:
         if ids:
             return ids[0]
         try:
-            return od_x(cfg.url, cfg.db, uid, cfg.apikey,
-                        "product.season", "create", [[{"name": name}]])
+            return od_x(
+                cfg.url, cfg.db, uid, cfg.apikey,
+                "product.season", "create",
+                args=[[{"name": name}]],
+                kwargs={},
+            )
         except Exception as e:
             self.log(f"Season create skipped for '{name}': {e}")
             return None
@@ -390,8 +403,12 @@ class SOtoPOSync:
         if cfg.company_id:
             vals["company_id"] = cfg.company_id
 
-        new_id = od_x(cfg.url, cfg.db, uid, cfg.apikey,
-                      "product.product", "create", [[vals]])
+        new_id = od_x(
+            cfg.url, cfg.db, uid, cfg.apikey,
+            "product.product", "create",
+            args=[[vals]],
+            kwargs={},
+        )
         self.log(f"Created product {default_code} in target with ID {new_id}")
         return new_id
 
@@ -435,8 +452,12 @@ class SOtoPOSync:
         for po in pos:
             if not po.get("order_line") and po.get("state") in ("draft", "sent", "to approve"):
                 try:
-                    od_x(cfg.url, cfg.db, uid, cfg.apikey,
-                         "purchase.order", "unlink", [[po["id"]]])
+                    od_x(
+                        cfg.url, cfg.db, uid, cfg.apikey,
+                        "purchase.order", "unlink",
+                        args=[[po["id"]]],
+                        kwargs={},
+                    )
                     self.log(f"Deleted empty PO {po.get('name')} / ID {po['id']}")
                 except Exception as e:
                     self.log(f"Could not delete empty PO {po['id']}: {e}")
@@ -470,8 +491,12 @@ class SOtoPOSync:
         if cfg.company_id:
             po_vals["company_id"] = cfg.company_id
 
-        po_id = od_x(cfg.url, cfg.db, uid, cfg.apikey,
-                     "purchase.order", "create", [[po_vals]])
+        po_id = od_x(
+            cfg.url, cfg.db, uid, cfg.apikey,
+            "purchase.order", "create",
+            args=[[po_vals]],
+            kwargs={},
+        )
         self.log(f"PO header created: {po_id}")
 
         line_cmds = []
@@ -492,12 +517,20 @@ class SOtoPOSync:
 
         if not line_cmds:
             self.log("No valid lines, delete PO")
-            od_x(cfg.url, cfg.db, uid, cfg.apikey,
-                 "purchase.order", "unlink", [[po_id]])
+            od_x(
+                cfg.url, cfg.db, uid, cfg.apikey,
+                "purchase.order", "unlink",
+                args=[[po_id]],
+                kwargs={},
+            )
             return None
 
-        od_x(cfg.url, cfg.db, uid, cfg.apikey,
-             "purchase.order", "write", [[po_id, {"order_line": line_cmds}]])
+        od_x(
+            cfg.url, cfg.db, uid, cfg.apikey,
+            "purchase.order", "write",
+            args=[[po_id, {"order_line": line_cmds}]],
+            kwargs={},
+        )
         self.log(f"PO {po_id} created for SO {so_name}")
         return po_id
 
