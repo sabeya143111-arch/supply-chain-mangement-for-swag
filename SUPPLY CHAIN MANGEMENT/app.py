@@ -181,7 +181,7 @@ class OdooCfg:
         self.apikey = data.get("apikey", "") or data.get("api_key", "")
         self.partner_code_field = data.get("partner_code_field", "company_code")
         self.company_id = data.get("company_id", None)
-        self.has_brand_model = bool(data.get("has_brand_model", False))  # default false
+        self.has_brand_model = bool(data.get("has_brand_model", False))
         self.has_season_model = bool(data.get("has_season_model", False))
 
     def auth(self):
@@ -288,8 +288,8 @@ class SOtoPOSync:
                 "standard_price": float(prod.get("standard_price") or 0.0),
                 "list_price": float(prod.get("lst_price") or 0.0),
                 "categ_name": m2o(prod.get("categ_id")),
-                "brand_name": None,     # brand disabled for now
-                "season_name": None,    # season disabled by default
+                "brand_name": None,
+                "season_name": None,
             }
         return out
 
@@ -310,15 +310,16 @@ class SOtoPOSync:
         if ids:
             return ids[0]
 
-        self.log(f"Category not found in target, skipping create for '{name}'")
+        # No create to avoid errors
+        # self.log(f"Category not found in target, skipping create for '{name}'")
         return None
 
     def _get_or_create_brand(self, name):
-        # brand completely disabled to avoid product.brand errors
+        # brand completely disabled
         return None
 
     def _get_or_create_season(self, name):
-        # season also disabled by default; enable later if needed
+        # season disabled
         return None
 
     def _ensure_product(self, prod_data):
@@ -342,7 +343,7 @@ class SOtoPOSync:
             return ids[0]
 
         categ_id = self._get_or_create_category(prod_data.get("categ_name"))
-        # brand/season disabled for now
+
         vals = {
             "name": prod_data.get("name") or default_code,
             "default_code": default_code,
@@ -493,11 +494,15 @@ class SOtoPOSync:
             )
             return None
 
-        od_x(
-            cfg.url, cfg.db, uid, cfg.apikey,
-            "purchase.order", "write",
-            args=[[po_id, {"order_line": line_cmds}]],
-            kwargs={},
+        # IMPORTANT: order_line write direct execute_kw se, docs pattern ke mutabik
+        purchase_obj = od_proxy(cfg.url, "object")
+        purchase_obj.execute_kw(
+            cfg.db,
+            uid,
+            cfg.apikey,
+            "purchase.order",
+            "write",
+            [[po_id], {"order_line": line_cmds}],
         )
         self.log(f"PO {po_id} created for SO {so_name}")
         return po_id
